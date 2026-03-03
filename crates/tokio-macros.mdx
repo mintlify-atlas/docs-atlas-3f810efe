@@ -1,6 +1,6 @@
 ---
 title: tokio-macros
-description: Procedural macros for Tokio including #[tokio::main] and #[tokio::test]
+description: Procedural macros for Tokio including #[tokio::main], #[tokio::test], join!, try_join!, and select!
 ---
 
 `tokio-macros` provides Tokio's procedural macros that simplify setting up and testing async code. These macros eliminate boilerplate when creating async entry points and tests.
@@ -393,6 +393,306 @@ Using `#[tokio::main]` on frequently-called functions is inefficient. Consider u
     Include `test-util` feature for `start_paused` and time control
   </Step>
 </Steps>
+
+## Utility Macros
+
+The `macros` feature also includes essential utility macros for working with multiple concurrent operations.
+
+### The join! Macro
+
+Waits on multiple concurrent branches, returning when **all** branches complete.
+
+```rust
+use tokio::join;
+
+async fn fetch_user() -> String {
+    // async work
+    "user".to_string()
+}
+
+async fn fetch_posts() -> Vec<String> {
+    // async work
+    vec!["post1".to_string(), "post2".to_string()]
+}
+
+#[tokio::main]
+async fn main() {
+    let (user, posts) = join!(
+        fetch_user(),
+        fetch_posts()
+    );
+    
+    println!("User: {}, Posts: {:?}", user, posts);
+}
+```
+
+<Note>
+`join!` runs all futures concurrently on the same task and waits for **all** to complete, even if some return errors.
+</Note>
+
+#### Fairness Control
+
+By default, `join!` rotates which future is polled first. Use `biased;` for deterministic order:
+
+```rust
+let (a, b, c) = tokio::join!(
+    biased;
+    future_a(),
+    future_b(),
+    future_c()
+);
+```
+
+<Tip>
+Use `join!` when you need results from multiple independent operations and all must complete.
+</Tip>
+
+### The try_join! Macro
+
+Similar to `join!`, but returns early on the first `Err`:
+
+```rust
+use tokio::try_join;
+
+async fn fetch_user() -> Result<String, Box<dyn std::error::Error>> {
+    Ok("user".to_string())
+}
+
+async fn fetch_settings() -> Result<String, Box<dyn std::error::Error>> {
+    Ok("settings".to_string())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let (user, settings) = try_join!(
+        fetch_user(),
+        fetch_settings()
+    )?;
+    
+    println!("User: {}, Settings: {}", user, settings);
+    Ok(())
+}
+```
+
+<Note>
+All futures in `try_join!` must return `Result` with the **same** error type.
+</Note>
+
+#### When to Use try_join!
+
+```rust
+// Good: All operations must succeed
+let (user, profile, settings) = try_join!(
+    db.fetch_user(),
+    db.fetch_profile(),
+    db.fetch_settings()
+)?;
+
+// Bad: Different error handling needed
+// Use join! and handle errors individually instead
+```
+
+### The select! Macro
+
+Waits on multiple concurrent branches, returning when the **first** branch completes:
+
+```rust
+use tokio::select;
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() {
+    let (tx, mut rx) = mpsc::channel::<i32>(100);
+    
+    loop {
+        select! {
+            Some(value) = rx.recv() => {
+                println!("Got: {}", value);
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("Shutting down");
+                break;
+            }
+        }
+    }
+}
+```
+
+<Note>
+`select!` cancels the remaining branches when the first one completes. Ensure operations are cancellation-safe.
+</Note>
+
+#### Pattern Matching
+
+```rust
+select! {
+    // Pattern match on result
+    Ok(n) = reader.read(&mut buf) => {
+        println!("Read {} bytes", n);
+    }
+    // Bind to variable
+    msg = rx.recv() => {
+        if let Some(m) = msg {
+            process(m);
+        }
+    }
+    // Multiple patterns
+    result = operation() => match result {
+        Ok(val) => handle_success(val),
+        Err(e) => handle_error(e),
+    }
+}
+```
+
+#### Conditional Branches
+
+```rust
+let mut do_shutdown = false;
+
+loop {
+    select! {
+        msg = rx.recv(), if !do_shutdown => {
+            // Only poll rx when not shutting down
+            process(msg);
+        }
+        _ = shutdown_rx.recv() => {
+            do_shutdown = true;
+        }
+    }
+}
+```
+
+#### Biased Polling
+
+```rust
+select! {
+    biased;
+    
+    // Shutdown is checked first every time
+    _ = shutdown_signal.recv() => {
+        return;
+    }
+    // Then check for messages
+    msg = message_rx.recv() => {
+        process(msg);
+    }
+}
+```
+
+<Warning>
+Biased polling can cause starvation. Place high-priority operations first, but ensure fairness for all branches.
+</Warning>
+
+#### The else Branch
+
+```rust
+select! {
+    msg = rx.recv() => {
+        println!("Received: {:?}", msg);
+    }
+    else => {
+        // All branches disabled, execute fallback
+        println!("No messages available");
+    }
+}
+```
+
+<Info>
+Without an `else` branch, `select!` panics if all branches are disabled.
+</Info>
+
+#### Cancellation Safety
+
+Some operations are cancellation-safe, others are not:
+
+**Cancellation-safe operations:**
+- `tokio::sync::mpsc::Receiver::recv`
+- `tokio::sync::broadcast::Receiver::recv`
+- `tokio::sync::watch::Receiver::changed`
+- `tokio::net::TcpListener::accept`
+- `tokio::io::AsyncReadExt::read` (on `TcpStream`)
+
+**NOT cancellation-safe:**
+- `tokio::io::AsyncWriteExt::write_all`
+- `tokio::io::AsyncReadExt::read_exact`
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+// ❌ Bad: write_all may partially write
+select! {
+    _ = socket.write_all(&buf) => { }
+    _ = shutdown.recv() => { }
+}
+
+// ✅ Good: Complete the write, then check shutdown
+let write_fut = socket.write_all(&buf);
+tokio::pin!(write_fut);
+
+loop {
+    select! {
+        result = &mut write_fut => {
+            result?;
+            break;
+        }
+        _ = shutdown.recv() => {
+            // Wait for write to complete before shutdown
+            write_fut.await?;
+            break;
+        }
+    }
+}
+```
+
+### Comparison: join! vs try_join! vs select!
+
+| Macro | Waits for | Returns on | Use Case |
+|-------|-----------|------------|----------|
+| `join!` | All futures | All complete | Independent operations, all results needed |
+| `try_join!` | All futures | First `Err` or all `Ok` | Operations that must all succeed |
+| `select!` | First future | First complete | Racing operations, timeouts, shutdown signals |
+
+### Complete Example: Using All Three
+
+```rust
+use tokio::{join, try_join, select};
+use tokio::time::{sleep, Duration, timeout};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // join! - Wait for all independent operations
+    let (users, posts, comments) = join!(
+        fetch_users(),
+        fetch_posts(),
+        fetch_comments()
+    );
+    
+    // try_join! - All must succeed
+    let (profile, settings) = try_join!(
+        save_profile(&users),
+        save_settings(&posts)
+    )?;
+    
+    // select! - First to complete wins
+    select! {
+        result = process_data() => {
+            println!("Processing completed: {:?}", result);
+        }
+        _ = sleep(Duration::from_secs(10)) => {
+            println!("Processing timed out");
+        }
+    }
+    
+    Ok(())
+}
+
+async fn fetch_users() -> Vec<String> { vec![] }
+async fn fetch_posts() -> Vec<String> { vec![] }
+async fn fetch_comments() -> Vec<String> { vec![] }
+async fn save_profile(users: &[String]) -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+async fn save_settings(posts: &[String]) -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+async fn process_data() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }
+```
 
 ## Resources
 
