@@ -1,0 +1,104 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "Tokio",
+  "projectDescription": "A runtime for writing reliable asynchronous applications with Rust",
+  "theme": "aspen",
+  "primaryColor": "#ce422b",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/runtime",
+              "concepts/tasks",
+              "concepts/async-io"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "modules/runtime",
+              "modules/task",
+              "modules/sync",
+              "modules/time",
+              "modules/io",
+              "modules/net",
+              "modules/fs",
+              "modules/process",
+              "modules/signal"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/feature-flags",
+              "advanced/performance",
+              "advanced/testing",
+              "advanced/blocking-code"
+            ]
+          },
+          {
+            "group": "Related Crates",
+            "pages": [
+              "crates/tokio-util",
+              "crates/tokio-stream",
+              "crates/tokio-macros",
+              "crates/tokio-test"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Examples",
+        "groups": [
+          {
+            "group": "Code Examples",
+            "pages": [
+              "examples/overview",
+              "examples/echo-server",
+              "examples/chat",
+              "examples/custom-executor"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multithreaded work-stealing task scheduler",
+    "Asynchronous TCP and UDP sockets",
+    "Filesystem operations",
+    "Synchronization primitives (channels, mutex, barriers)",
+    "Time utilities (sleep, intervals, timeouts)",
+    "Signal handling",
+    "Process management"
+  ],
+  "publicApiSurface": [
+    "tokio::runtime",
+    "tokio::task",
+    "tokio::sync",
+    "tokio::time",
+    "tokio::io",
+    "tokio::net",
+    "tokio::fs",
+    "tokio::process",
+    "tokio::signal",
+    "tokio::main (macro)",
+    "tokio::test (macro)",
+    "tokio::spawn",
+    "tokio::select!"
+  ]
+}
