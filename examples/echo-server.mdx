@@ -1,0 +1,326 @@
+---
+title: Echo TCP Server
+description: Build a concurrent TCP echo server with Tokio that handles multiple clients simultaneously
+---
+
+The echo TCP server is the "hello world" of async networking. This example demonstrates how Tokio enables you to handle multiple concurrent connections efficiently using async I/O.
+
+## What You'll Learn
+
+<CardGroup cols={2}>
+  <Card title="Concurrent Connections" icon="users">
+    Handle multiple clients simultaneously with `tokio::spawn`
+  </Card>
+  
+  <Card title="Async I/O" icon="arrows-rotate">
+    Read and write data asynchronously with buffers
+  </Card>
+  
+  <Card title="TCP Listener" icon="server">
+    Accept incoming connections in an async loop
+  </Card>
+  
+  <Card title="Error Handling" icon="triangle-exclamation">
+    Gracefully handle connection failures
+  </Card>
+</CardGroup>
+
+## Running the Example
+
+<Steps>
+  <Step title="Start the echo server">
+    ```bash
+    cargo run --example echo-tcp
+    ```
+    
+    The server listens on `127.0.0.1:8080` by default.
+  </Step>
+  
+  <Step title="Connect a client">
+    In another terminal, connect using the TCP client:
+    
+    ```bash
+    cargo run --example connect-tcp 127.0.0.1:8080
+    ```
+  </Step>
+  
+  <Step title="Send messages">
+    Type any message and press Enter. The server will echo it back to you.
+  </Step>
+  
+  <Step title="Open multiple clients">
+    Open additional terminals and run more clients. All will make progress simultaneously!
+  </Step>
+</Steps>
+
+<Tip>
+  You can specify a custom address when starting the server:
+  ```bash
+  cargo run --example echo-tcp 0.0.0.0:3000
+  ```
+</Tip>
+
+## Complete Code
+
+```rust
+//! A "hello world" echo server with Tokio
+//!
+//! This server will create a TCP listener, accept connections in a loop, and
+//! write back everything that's read off of each TCP connection.
+//!
+//! Because the Tokio runtime uses a thread pool, each TCP connection is
+//! processed concurrently with all other TCP connections across multiple
+//! threads.
+//!
+//! To see this server in action, you can run this in one terminal:
+//!
+//!     cargo run --example echo-tcp
+//!
+//! and in another terminal you can run:
+//!
+//!     cargo run --example connect-tcp 127.0.0.1:8080
+//!
+//! Each line you type in to the `connect-tcp` terminal should be echo'd back to
+//! you! If you open up multiple terminals running the `connect-tcp` example you
+//! should be able to see them all make progress simultaneously.
+
+#![warn(rust_2018_idioms)]
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+
+use std::env;
+use std::error::Error;
+
+const DEFAULT_ADDR: &str = "127.0.0.1:8080";
+const BUFFER_SIZE: usize = 4096;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    // Allow passing an address to listen on as the first argument of this
+    // program, but otherwise we'll just set up our TCP listener on
+    // 127.0.0.1:8080 for connections.
+    let addr = env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_ADDR.to_string());
+
+    // Next up we create a TCP listener which will listen for incoming
+    // connections. This TCP listener is bound to the address we determined
+    // above and must be associated with an event loop.
+    let listener = TcpListener::bind(&addr).await?;
+    println!("Listening on: {addr}");
+
+    loop {
+        // Asynchronously wait for an inbound socket.
+        let (mut socket, addr) = listener.accept().await?;
+
+        // And this is where much of the magic of this server happens. We
+        // crucially want all clients to make progress concurrently, rather than
+        // blocking one on completion of another. To achieve this we use the
+        // `tokio::spawn` function to execute the work in the background.
+        //
+        // Essentially here we're executing a new task to run concurrently,
+        // which will allow all of our clients to be processed concurrently.
+
+        tokio::spawn(async move {
+            let mut buf = vec![0; BUFFER_SIZE];
+
+            // In a loop, read data from the socket and write the data back.
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) => {
+                        // Connection closed by peer
+                        return;
+                    }
+                    Ok(n) => {
+                        // Write the data back. If writing fails, log the error and exit.
+                        if let Err(e) = socket.write_all(&buf[0..n]).await {
+                            eprintln!("Failed to write to socket {}: {}", addr, e);
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to read from socket {}: {}", addr, e);
+                        return;
+                    }
+                }
+            }
+        });
+    }
+}
+```
+
+## Code Walkthrough
+
+<Steps>
+  <Step title="Initialize the Tokio runtime">
+    The `#[tokio::main]` macro transforms your `async fn main()` into a synchronous entry point that sets up the Tokio runtime.
+    
+    ```rust
+    #[tokio::main]
+    async fn main() -> Result<(), Box<dyn Error>> {
+        // Runtime is automatically managed
+    }
+    ```
+  </Step>
+  
+  <Step title="Bind the TCP listener">
+    Create a TCP listener bound to the specified address. The `.await` suspends execution until the socket is bound.
+    
+    ```rust
+    let listener = TcpListener::bind(&addr).await?;
+    println!("Listening on: {addr}");
+    ```
+    
+    <Note>
+      `TcpListener::bind()` is async because on some platforms, binding can involve async operations.
+    </Note>
+  </Step>
+  
+  <Step title="Accept connections in a loop">
+    The accept loop runs forever, waiting for new connections. Each `.await` yields control back to the runtime until a client connects.
+    
+    ```rust
+    loop {
+        let (mut socket, addr) = listener.accept().await?;
+        // Handle the connection...
+    }
+    ```
+  </Step>
+  
+  <Step title="Spawn a task per connection">
+    This is the key to concurrency! `tokio::spawn()` creates a new task that runs independently.
+    
+    ```rust
+    tokio::spawn(async move {
+        let mut buf = vec![0; BUFFER_SIZE];
+        // Echo loop...
+    });
+    ```
+    
+    The `async move` block captures ownership of the socket, allowing it to live beyond the loop iteration.
+  </Step>
+  
+  <Step title="Echo data back to the client">
+    Read from the socket into a buffer, then write it back:
+    
+    ```rust
+    match socket.read(&mut buf).await {
+        Ok(0) => return, // Connection closed
+        Ok(n) => {
+            socket.write_all(&buf[0..n]).await?;
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return;
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+## Key Concepts
+
+### Concurrent Task Spawning
+
+```rust
+tokio::spawn(async move {
+    // Each connection runs in its own task
+});
+```
+
+When you spawn a task, it runs independently on the Tokio thread pool. This allows hundreds or thousands of connections to be handled concurrently without creating a thread per connection.
+
+<Note>
+  Unlike OS threads, Tokio tasks are lightweight. You can spawn millions of them with minimal overhead.
+</Note>
+
+### Async I/O Traits
+
+The example uses two important traits:
+
+- **`AsyncReadExt`** - Provides `.read()` for reading data asynchronously
+- **`AsyncWriteExt`** - Provides `.write_all()` for writing data asynchronously
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+```
+
+### Buffer Management
+
+```rust
+let mut buf = vec![0; BUFFER_SIZE];
+```
+
+Each connection has its own 4KB buffer. When data is read, only the filled portion (`&buf[0..n]`) is echoed back.
+
+### Error Handling
+
+The example demonstrates graceful error handling:
+
+- `Ok(0)` - Client closed the connection cleanly
+- `Ok(n)` - Successfully read `n` bytes
+- `Err(e)` - An error occurred; log it and close the connection
+
+## Performance Characteristics
+
+<CardGroup cols={2}>
+  <Card title="Memory Efficient" icon="microchip">
+    4KB per connection vs. ~2MB per OS thread
+  </Card>
+  
+  <Card title="Highly Concurrent" icon="gauge-high">
+    Handle 10,000+ simultaneous connections
+  </Card>
+  
+  <Card title="Low Latency" icon="bolt">
+    No context switching overhead between connections
+  </Card>
+  
+  <Card title="CPU Efficient" icon="chart-line">
+    Work-stealing scheduler maximizes CPU utilization
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### Custom Address Binding
+
+```rust
+let addr = env::args()
+    .nth(1)
+    .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+```
+
+This pattern allows users to override the default address via command-line arguments.
+
+### Per-Connection State
+
+```rust
+tokio::spawn(async move {
+    let mut buf = vec![0; 4096];
+    // buf is owned by this task
+});
+```
+
+The `async move` block transfers ownership of captured variables to the spawned task.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Chat Server" icon="comments" href="/examples/chat">
+    Learn message broadcasting and shared state management
+  </Card>
+  
+  <Card title="Custom Executor" icon="gears" href="/examples/custom-executor">
+    Integrate Tokio with custom executor frameworks
+  </Card>
+</CardGroup>
+
+<Tip>
+  Try modifying the example to:
+  - Add connection logging with timestamps
+  - Implement a maximum connection limit
+  - Transform the data before echoing (e.g., uppercase)
+  - Add timeout handling for idle connections
+</Tip>

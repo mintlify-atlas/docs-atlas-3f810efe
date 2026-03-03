@@ -1,0 +1,431 @@
+---
+title: Time
+description: Utilities for tracking time and scheduling work in Tokio
+---
+
+Types and functions for tracking time and executing code after a set period. All time types must be used from within a Tokio runtime context.
+
+## Overview
+
+Tokio's time module provides several primitives for time-based operations:
+
+<CardGroup cols={3}>
+  <Card title="Sleep" icon="bed">
+    Wait for a duration or until a specific instant
+  </Card>
+  
+  <Card title="Interval" icon="clock">
+    Execute code repeatedly at fixed intervals
+  </Card>
+  
+  <Card title="Timeout" icon="timer">
+    Bound the execution time of futures
+  </Card>
+</CardGroup>
+
+## Sleep
+
+### sleep
+
+<ParamField path="sleep" type="fn(duration: Duration) -> Sleep">
+  Waits until `duration` has elapsed.
+  
+  **Parameters:**
+  - `duration`: How long to sleep
+  
+  **Returns:** A `Sleep` future that completes after the duration
+  
+  **Example:**
+  ```rust
+  use tokio::time::{sleep, Duration};
+  
+  #[tokio::main]
+  async fn main() {
+      println!("Waiting...");
+      sleep(Duration::from_secs(2)).await;
+      println!("2 seconds have elapsed");
+  }
+  ```
+</ParamField>
+
+<Info>
+No work is performed while awaiting on the sleep future. `Sleep` operates at millisecond granularity and should not be used for high-resolution timing.
+</Info>
+
+### sleep_until
+
+<ParamField path="sleep_until" type="fn(deadline: Instant) -> Sleep">
+  Waits until `deadline` is reached.
+  
+  **Parameters:**
+  - `deadline`: The instant to wait until
+  
+  **Example:**
+  ```rust
+  use tokio::time::{sleep_until, Instant, Duration};
+  
+  #[tokio::main]
+  async fn main() {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      sleep_until(deadline).await;
+      println!("5 seconds have elapsed");
+  }
+  ```
+</ParamField>
+
+### Sleep Type
+
+The `Sleep` future returned by `sleep` and `sleep_until` can be pinned and reset.
+
+<ParamField path="reset" type="fn(self: Pin<&mut Self>, deadline: Instant)">
+  Resets the `Sleep` instance to a new deadline without creating a new future.
+  
+  **Example:**
+  ```rust
+  use tokio::time::{sleep, Duration, Instant};
+  
+  #[tokio::main]
+  async fn main() {
+      let sleep = sleep(Duration::from_secs(10));
+      tokio::pin!(sleep);
+      
+      // Reset to 1 second
+      sleep.as_mut().reset(Instant::now() + Duration::from_secs(1));
+      sleep.await;
+  }
+  ```
+</ParamField>
+
+## Interval
+
+### interval
+
+<ParamField path="interval" type="fn(period: Duration) -> Interval">
+  Creates a new `Interval` that yields every `period`.
+  
+  **Parameters:**
+  - `period`: Time between ticks
+  
+  **Returns:** An `Interval` stream
+  
+  **Example:**
+  ```rust
+  use tokio::time::{interval, Duration};
+  
+  #[tokio::main]
+  async fn main() {
+      let mut interval = interval(Duration::from_secs(1));
+      
+      for _ in 0..5 {
+          interval.tick().await;
+          println!("Tick!");
+      }
+  }
+  ```
+</ParamField>
+
+<Info>
+`interval` measures time since the last tick, not absolute time. If processing takes time, the next tick may happen sooner to maintain the overall rate.
+</Info>
+
+### interval_at
+
+<ParamField path="interval_at" type="fn(start: Instant, period: Duration) -> Interval">
+  Creates an interval that starts at a specific instant.
+  
+  **Parameters:**
+  - `start`: When to start the first tick
+  - `period`: Time between subsequent ticks
+  
+  **Example:**
+  ```rust
+  use tokio::time::{interval_at, Duration, Instant};
+  
+  #[tokio::main]
+  async fn main() {
+      let start = Instant::now() + Duration::from_secs(5);
+      let mut interval = interval_at(start, Duration::from_secs(1));
+      
+      interval.tick().await; // Waits 5 seconds for first tick
+      println!("First tick");
+      
+      interval.tick().await; // Waits 1 second
+      println!("Second tick");
+  }
+  ```
+</ParamField>
+
+### Interval Methods
+
+<ParamField path="tick" type="async fn(&mut self) -> Instant">
+  Waits for the next tick of the interval.
+  
+  **Returns:** The instant of the tick
+  
+  **Example:**
+  ```rust
+  let mut interval = interval(Duration::from_millis(100));
+  
+  loop {
+      interval.tick().await;
+      process_periodic_task();
+  }
+  ```
+</ParamField>
+
+<ParamField path="reset" type="fn(&mut self)">
+  Resets the interval immediately, causing the next tick to happen after `period` from now.
+</ParamField>
+
+### MissedTickBehavior
+
+<ParamField path="MissedTickBehavior" type="enum">
+  Controls behavior when ticks are missed (e.g., if processing takes longer than the period).
+  
+  **Variants:**
+  - `Burst`: Fires all missed ticks immediately
+  - `Delay`: Delays to maintain spacing (default)
+  - `Skip`: Skips missed ticks
+  
+  **Example:**
+  ```rust
+  use tokio::time::{interval, MissedTickBehavior, Duration};
+  
+  let mut interval = interval(Duration::from_millis(100));
+  interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+  ```
+</ParamField>
+
+## Timeout
+
+### timeout
+
+<ParamField path="timeout" type="fn<T>(duration: Duration, future: T) -> Timeout<T>">
+  Requires a future to complete before a duration has elapsed.
+  
+  **Parameters:**
+  - `duration`: Maximum time to wait
+  - `future`: The future to execute
+  
+  **Returns:** `Result<T::Output, Elapsed>` - Ok with result or Err if timed out
+  
+  **Example:**
+  ```rust
+  use tokio::time::{timeout, Duration};
+  
+  async fn long_operation() -> String {
+      tokio::time::sleep(Duration::from_secs(10)).await;
+      "done".to_string()
+  }
+  
+  #[tokio::main]
+  async fn main() {
+      match timeout(Duration::from_secs(1), long_operation()).await {
+          Ok(result) => println!("Completed: {}", result),
+          Err(_) => println!("Operation timed out"),
+      }
+  }
+  ```
+</ParamField>
+
+<Warning>
+If the timeout elapses, the future is dropped and cancelled. Ensure proper cleanup in Drop implementations if needed.
+</Warning>
+
+### timeout_at
+
+<ParamField path="timeout_at" type="fn<T>(deadline: Instant, future: T) -> Timeout<T>">
+  Requires a future to complete before a deadline.
+  
+  **Parameters:**
+  - `deadline`: The instant by which the future must complete
+  - `future`: The future to execute
+  
+  **Example:**
+  ```rust
+  use tokio::time::{timeout_at, Instant, Duration};
+  
+  async fn operation() -> u32 {
+      // ... some async work
+      42
+  }
+  
+  #[tokio::main]
+  async fn main() {
+      let deadline = Instant::now() + Duration::from_secs(5);
+      
+      match timeout_at(deadline, operation()).await {
+          Ok(result) => println!("Result: {}", result),
+          Err(_) => println!("Deadline exceeded"),
+      }
+  }
+  ```
+</ParamField>
+
+## Instant
+
+<ParamField path="Instant" type="struct">
+  A measurement of a monotonically nondecreasing clock. Opaque and useful only with `Duration`.
+  
+  **Example:**
+  ```rust
+  use tokio::time::{Instant, Duration};
+  
+  let now = Instant::now();
+  // ... do some work ...
+  let elapsed = now.elapsed();
+  println!("Took {} ms", elapsed.as_millis());
+  ```
+</ParamField>
+
+### Instant Methods
+
+<ParamField path="now" type="fn() -> Instant">
+  Returns the current instant.
+</ParamField>
+
+<ParamField path="elapsed" type="fn(&self) -> Duration">
+  Returns the time elapsed since this instant.
+</ParamField>
+
+<ParamField path="checked_add" type="fn(&self, duration: Duration) -> Option<Instant>">
+  Adds a duration to this instant, returning `None` on overflow.
+</ParamField>
+
+<ParamField path="checked_sub" type="fn(&self, duration: Duration) -> Option<Instant>">
+  Subtracts a duration from this instant, returning `None` on underflow.
+</ParamField>
+
+## Duration
+
+Re-exported from `std::time::Duration` for convenience.
+
+```rust
+use tokio::time::Duration;
+
+let duration = Duration::from_secs(5);
+let duration = Duration::from_millis(500);
+let duration = Duration::from_micros(500_000);
+```
+
+## Practical Examples
+
+### Periodic Task Execution
+
+```rust
+use tokio::time::{interval, Duration};
+
+async fn periodic_cleanup() {
+    let mut interval = interval(Duration::from_secs(60));
+    
+    loop {
+        interval.tick().await;
+        
+        // Perform cleanup
+        cleanup_temp_files().await;
+        check_health().await;
+    }
+}
+```
+
+### Timeout with Retry
+
+```rust
+use tokio::time::{timeout, Duration, sleep};
+
+async fn fetch_with_retry(url: &str) -> Result<String, Error> {
+    for attempt in 1..=3 {
+        match timeout(Duration::from_secs(5), fetch(url)).await {
+            Ok(Ok(data)) => return Ok(data),
+            Ok(Err(e)) => eprintln!("Attempt {} failed: {}", attempt, e),
+            Err(_) => eprintln!("Attempt {} timed out", attempt),
+        }
+        
+        if attempt < 3 {
+            sleep(Duration::from_secs(2)).await;
+        }
+    }
+    
+    Err(Error::MaxRetriesExceeded)
+}
+```
+
+### Debouncing
+
+```rust
+use tokio::time::{sleep, Duration, Instant};
+use tokio::sync::mpsc;
+
+async fn debounce_events(mut rx: mpsc::Receiver<Event>) {
+    let mut last_event = None;
+    let debounce_duration = Duration::from_millis(300);
+    
+    loop {
+        tokio::select! {
+            Some(event) = rx.recv() => {
+                last_event = Some((event, Instant::now()));
+            }
+            _ = sleep(debounce_duration), if last_event.is_some() => {
+                if let Some((event, time)) = last_event.take() {
+                    if time.elapsed() >= debounce_duration {
+                        process_event(event).await;
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+## Testing with Time
+
+<Info>
+Tokio provides `tokio::time::pause()`, `tokio::time::advance()`, and `tokio::time::resume()` functions for testing time-dependent code. These require the `test-util` feature.
+</Info>
+
+```rust
+#[cfg(test)]
+mod tests {
+    use tokio::time::{self, Duration};
+    
+    #[tokio::test]
+    async fn test_with_time_control() {
+        time::pause();
+        
+        let start = time::Instant::now();
+        
+        tokio::spawn(async {
+            time::sleep(Duration::from_secs(60)).await;
+            println!("Done!");
+        });
+        
+        time::advance(Duration::from_secs(60)).await;
+        
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Enable time driver">
+    Ensure the runtime has the time driver enabled with `enable_time()` or `enable_all()`.
+  </Step>
+  
+  <Step title="Use appropriate granularity">
+    Time operations work at millisecond granularity. Don't rely on sub-millisecond precision.
+  </Step>
+  
+  <Step title="Handle missed ticks">
+    Configure `MissedTickBehavior` appropriately for your interval use case.
+  </Step>
+  
+  <Step title="Avoid busy waiting">
+    Always use `sleep` or `interval` rather than polling in loops.
+  </Step>
+</Steps>
+
+<Tip>
+For rate limiting, combine `Semaphore` with `interval` to control both concurrency and rate.
+</Tip>

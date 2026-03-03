@@ -1,0 +1,376 @@
+---
+title: tokio-util
+description: Additional utilities for working with Tokio, including codecs, time utilities, and synchronization primitives
+---
+
+`tokio-util` provides additional utilities for working with Tokio. This crate contains helpers and extensions that complement the core Tokio runtime.
+
+## Installation
+
+Add `tokio-util` to your `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+tokio-util = "0.7"
+```
+
+<Note>
+`tokio-util` is not versioned in lockstep with the core `tokio` crate, but respects Rust's semantic versioning policy.
+</Note>
+
+## Features
+
+The crate is organized around optional feature flags:
+
+<CardGroup cols={2}>
+  <Card title="codec" icon="code">
+    Encoding and decoding frames with `Decoder` and `Encoder` traits
+  </Card>
+  <Card title="compat" icon="arrows-rotate">
+    Compatibility layer between `tokio::io` and `futures-io` traits
+  </Card>
+  <Card title="io-util" icon="file-arrow-down">
+    Additional I/O utilities like `ReaderStream` and `StreamReader`
+  </Card>
+  <Card title="time" icon="clock">
+    Time-based utilities including `DelayQueue`
+  </Card>
+  <Card title="net" icon="network-wired">
+    Network utilities and UDP frame handling
+  </Card>
+  <Card title="rt" icon="gear">
+    Runtime utilities and task tracking
+  </Card>
+</CardGroup>
+
+### Enable All Features
+
+```toml Cargo.toml
+[dependencies]
+tokio-util = { version = "0.7", features = ["full"] }
+```
+
+## Codec - Framing I/O Streams
+
+<Info>
+Requires the `codec` feature flag.
+</Info>
+
+Codecs provide a way to convert between byte streams and typed frames. This is essential for implementing network protocols.
+
+### Using LinesCodec
+
+The `LinesCodec` splits data by newlines:
+
+```rust
+use futures::sink::SinkExt;
+use tokio_util::codec::{FramedWrite, LinesCodec};
+
+#[tokio::main]
+async fn main() {
+    let buffer = Vec::new();
+    let encoder = LinesCodec::new();
+    let mut writer = FramedWrite::new(buffer, encoder);
+
+    writer.send("Hello").await.unwrap();
+    writer.send("World").await.unwrap();
+
+    let buffer = writer.get_ref();
+    assert_eq!(buffer.as_slice(), "Hello\nWorld\n".as_bytes());
+}
+```
+
+### Reading Framed Data
+
+```rust
+use tokio_stream::StreamExt;
+use tokio_util::codec::{FramedRead, LinesCodec};
+
+#[tokio::main]
+async fn main() {
+    let message = "Hello\nWorld".as_bytes();
+    let decoder = LinesCodec::new();
+    let mut reader = FramedRead::new(message, decoder);
+
+    let frame1 = reader.next().await.unwrap().unwrap();
+    let frame2 = reader.next().await.unwrap().unwrap();
+
+    assert_eq!(frame1, "Hello");
+    assert_eq!(frame2, "World");
+}
+```
+
+### Custom Decoder Implementation
+
+Here's an example of a custom length-prefixed string decoder:
+
+```rust
+use tokio_util::codec::Decoder;
+use bytes::{BytesMut, Buf};
+
+struct MyStringDecoder {}
+
+const MAX: usize = 8 * 1024 * 1024;
+
+impl Decoder for MyStringDecoder {
+    type Item = String;
+    type Error = std::io::Error;
+
+    fn decode(
+        &mut self,
+        src: &mut BytesMut
+    ) -> Result<Option<Self::Item>, Self::Error> {
+        if src.len() < 4 {
+            // Not enough data to read length marker
+            return Ok(None);
+        }
+
+        // Read length marker
+        let mut length_bytes = [0u8; 4];
+        length_bytes.copy_from_slice(&src[..4]);
+        let length = u32::from_le_bytes(length_bytes) as usize;
+
+        if length > MAX {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Frame of length {} is too large.", length)
+            ));
+        }
+
+        if src.len() < 4 + length {
+            // Reserve more space
+            src.reserve(4 + length - src.len());
+            return Ok(None);
+        }
+
+        // Extract frame data
+        let data = src[4..4 + length].to_vec();
+        src.advance(4 + length);
+
+        // Convert to string
+        match String::from_utf8(data) {
+            Ok(string) => Ok(Some(string)),
+            Err(utf8_error) => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                utf8_error.utf8_error(),
+            )),
+        }
+    }
+}
+```
+
+### Available Codecs
+
+<AccordionGroup>
+  <Accordion title="LinesCodec">
+    Splits frames by newline characters (`\n` or `\r\n`).
+  </Accordion>
+  <Accordion title="BytesCodec">
+    Simple codec that works with raw bytes.
+  </Accordion>
+  <Accordion title="LengthDelimitedCodec">
+    Frames data with a length prefix for variable-length messages.
+  </Accordion>
+  <Accordion title="AnyDelimiterCodec">
+    Splits frames by any specified delimiter byte sequence.
+  </Accordion>
+</AccordionGroup>
+
+## Synchronization Primitives
+
+### CancellationToken
+
+The `CancellationToken` allows signaling cancellation requests across multiple tasks:
+
+```rust
+use tokio::select;
+use tokio_util::sync::CancellationToken;
+
+#[tokio::main]
+async fn main() {
+    let token = CancellationToken::new();
+    let cloned_token = token.clone();
+
+    let join_handle = tokio::spawn(async move {
+        select! {
+            _ = cloned_token.cancelled() => {
+                // Token was cancelled
+                println!("Task cancelled");
+                5
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(9999)) => {
+                99
+            }
+        }
+    });
+
+    // Cancel after 10ms
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        token.cancel();
+    });
+
+    assert_eq!(5, join_handle.await.unwrap());
+}
+```
+
+### PollSemaphore
+
+Wrapper around `tokio::sync::Semaphore` that provides a `poll_acquire` method.
+
+## Time Utilities
+
+<Info>
+Requires the `time` feature flag.
+</Info>
+
+### DelayQueue
+
+A queue where elements are yielded once their delay has expired. Perfect for managing cache timeouts:
+
+```rust
+use tokio_util::time::DelayQueue;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() {
+    let mut delay_queue = DelayQueue::new();
+
+    // Insert items with different delays
+    delay_queue.insert("first", Duration::from_millis(100));
+    delay_queue.insert("second", Duration::from_millis(200));
+    delay_queue.insert("third", Duration::from_millis(50));
+
+    // Items are yielded in expiration order
+    // "third" will be yielded first (50ms)
+    // then "first" (100ms), then "second" (200ms)
+}
+```
+
+## I/O Utilities
+
+<Info>
+Requires the `io-util` feature flag.
+</Info>
+
+### ReaderStream
+
+Converts an `AsyncRead` into a `Stream` of bytes:
+
+```rust
+use tokio::io::AsyncReadExt;
+use tokio_util::io::ReaderStream;
+use tokio_stream::StreamExt;
+
+#[tokio::main]
+async fn main() {
+    let reader = tokio::io::repeat(42).take(10);
+    let mut stream = ReaderStream::new(reader);
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.unwrap();
+        // Process bytes
+    }
+}
+```
+
+### StreamReader
+
+Converts a `Stream` of bytes into an `AsyncRead`:
+
+```rust
+use tokio_util::io::StreamReader;
+use tokio_stream::iter;
+use tokio::io::AsyncReadExt;
+
+#[tokio::main]
+async fn main() {
+    let stream = iter(vec![Ok(bytes::Bytes::from("hello")), Ok(bytes::Bytes::from(" world"))]);
+    let mut reader = StreamReader::new(stream);
+
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf).await.unwrap();
+    assert_eq!(buf, "hello world");
+}
+```
+
+### SyncBridge
+
+Bridges `tokio::io` async traits with `std::io` sync traits, enabling compatibility with blocking I/O.
+
+## Task Utilities
+
+<Info>
+Requires the `rt` feature flag.
+</Info>
+
+### TaskTracker
+
+Tracks spawned tasks and waits for them to complete:
+
+```rust
+use tokio_util::task::TaskTracker;
+
+#[tokio::main]
+async fn main() {
+    let tracker = TaskTracker::new();
+
+    for i in 0..10 {
+        tracker.spawn(async move {
+            println!("Task {} running", i);
+        });
+    }
+
+    // Close the tracker and wait for all tasks
+    tracker.close();
+    tracker.wait().await;
+
+    println!("All tasks completed");
+}
+```
+
+### JoinMap
+
+A collection of tasks that can be awaited individually:
+
+```rust
+use tokio_util::task::JoinMap;
+
+#[tokio::main]
+async fn main() {
+    let mut map = JoinMap::new();
+
+    map.spawn("task1", async { 1 });
+    map.spawn("task2", async { 2 });
+
+    while let Some((key, result)) = map.join_next().await {
+        println!("{} completed with: {}", key, result.unwrap());
+    }
+}
+```
+
+## Either Type
+
+A sum type for handling two possible types:
+
+```rust
+use tokio_util::either::Either;
+
+let value: Either<i32, String> = Either::Left(42);
+
+match value {
+    Either::Left(num) => println!("Number: {}", num),
+    Either::Right(text) => println!("Text: {}", text),
+}
+```
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="API Documentation" icon="book" href="https://docs.rs/tokio-util">
+    Complete API reference on docs.rs
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/tokio-rs/tokio/tree/master/tokio-util">
+    View source code and examples
+  </Card>
+</CardGroup>

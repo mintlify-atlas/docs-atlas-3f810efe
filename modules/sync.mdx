@@ -1,0 +1,419 @@
+---
+title: Sync
+description: Synchronization primitives for asynchronous contexts
+---
+
+Synchronization primitives that work in asynchronous contexts. These allow independent tasks to communicate and coordinate.
+
+## Overview
+
+Tokio provides async equivalents of standard synchronization primitives. Unlike `std` types, these are designed to be held across `.await` points and integrate with the async task system.
+
+<Info>
+All synchronization primitives in this module are runtime agnostic and can be freely moved between different Tokio runtime instances or even used from non-Tokio runtimes.
+</Info>
+
+## Message Passing
+
+Message passing is the most common form of synchronization in async programs, allowing tasks to operate independently while communicating.
+
+### mpsc Channel
+
+<ParamField path="mpsc::channel" type="fn<T>(buffer: usize) -> (Sender<T>, Receiver<T>)">
+  Creates a bounded multi-producer, single-consumer channel.
+  
+  **Parameters:**
+  - `buffer`: Maximum number of messages that can be queued
+  
+  **Returns:** A tuple of `(Sender<T>, Receiver<T>)`
+  
+  **Example:**
+  ```rust
+  use tokio::sync::mpsc;
+  
+  #[tokio::main]
+  async fn main() {
+      let (tx, mut rx) = mpsc::channel(100);
+      
+      tokio::spawn(async move {
+          for i in 0..10 {
+              tx.send(i).await.unwrap();
+          }
+      });
+      
+      while let Some(msg) = rx.recv().await {
+          println!("Received: {}", msg);
+      }
+  }
+  ```
+</ParamField>
+
+<ParamField path="mpsc::unbounded_channel" type="fn<T>() -> (UnboundedSender<T>, UnboundedReceiver<T>)">
+  Creates an unbounded multi-producer, single-consumer channel.
+  
+  **Returns:** A tuple of `(UnboundedSender<T>, UnboundedReceiver<T>)`
+  
+  **Example:**
+  ```rust
+  use tokio::sync::mpsc;
+  
+  let (tx, mut rx) = mpsc::unbounded_channel();
+  
+  tx.send("hello").unwrap();
+  tx.send("world").unwrap();
+  
+  assert_eq!(rx.recv().await, Some("hello"));
+  assert_eq!(rx.recv().await, Some("world"));
+  ```
+</ParamField>
+
+#### Sender Methods
+
+<ParamField path="send" type="async fn(&self, value: T) -> Result<(), SendError<T>>">
+  Sends a value on the channel. Waits if the channel is at capacity.
+  
+  **Returns:**
+  - `Ok(())`: Value was sent successfully
+  - `Err(SendError)`: Receiver was dropped
+</ParamField>
+
+<ParamField path="blocking_send" type="fn(&self, value: T) -> Result<(), SendError<T>>">
+  Sends a value on the channel, blocking the current thread if at capacity. Can be used from synchronous code.
+</ParamField>
+
+#### Receiver Methods
+
+<ParamField path="recv" type="async fn(&mut self) -> Option<T>">
+  Receives the next value from the channel. Returns `None` when all senders are dropped.
+</ParamField>
+
+<ParamField path="blocking_recv" type="fn(&mut self) -> Option<T>">
+  Receives a value, blocking the current thread. Can be used from synchronous code.
+</ParamField>
+
+### oneshot Channel
+
+<ParamField path="oneshot::channel" type="fn<T>() -> (Sender<T>, Receiver<T>)">
+  Creates a one-shot channel for sending a single value from one producer to one consumer.
+  
+  **Example:**
+  ```rust
+  use tokio::sync::oneshot;
+  
+  #[tokio::main]
+  async fn main() {
+      let (tx, rx) = oneshot::channel();
+      
+      tokio::spawn(async move {
+          let result = expensive_computation().await;
+          tx.send(result).unwrap();
+      });
+      
+      let result = rx.await.unwrap();
+      println!("Got: {}", result);
+  }
+  ```
+</ParamField>
+
+### broadcast Channel
+
+<ParamField path="broadcast::channel" type="fn<T>(capacity: usize) -> (Sender<T>, Receiver<T>)">
+  Creates a multi-producer, multi-consumer broadcast channel. Each receiver sees every message.
+  
+  **Parameters:**
+  - `capacity`: Maximum number of messages stored in the channel
+  
+  **Example:**
+  ```rust
+  use tokio::sync::broadcast;
+  
+  #[tokio::main]
+  async fn main() {
+      let (tx, mut rx1) = broadcast::channel(16);
+      let mut rx2 = tx.subscribe();
+      
+      tokio::spawn(async move {
+          assert_eq!(rx1.recv().await.unwrap(), 10);
+          assert_eq!(rx1.recv().await.unwrap(), 20);
+      });
+      
+      tokio::spawn(async move {
+          assert_eq!(rx2.recv().await.unwrap(), 10);
+          assert_eq!(rx2.recv().await.unwrap(), 20);
+      });
+      
+      tx.send(10).unwrap();
+      tx.send(20).unwrap();
+  }
+  ```
+</ParamField>
+
+### watch Channel
+
+<ParamField path="watch::channel" type="fn<T>(init: T) -> (Sender<T>, Receiver<T>)">
+  Creates a watch channel for broadcasting state changes. Only the most recent value is stored.
+  
+  **Parameters:**
+  - `init`: Initial value
+  
+  **Example:**
+  ```rust
+  use tokio::sync::watch;
+  use std::time::Duration;
+  
+  #[tokio::main]
+  async fn main() {
+      let (tx, mut rx) = watch::channel("initial");
+      
+      tokio::spawn(async move {
+          while rx.changed().await.is_ok() {
+              println!("Config changed to: {}", *rx.borrow());
+          }
+      });
+      
+      tokio::time::sleep(Duration::from_secs(1)).await;
+      tx.send("updated").unwrap();
+  }
+  ```
+</ParamField>
+
+## State Synchronization
+
+### Mutex
+
+<ParamField path="Mutex::new" type="fn(t: T) -> Mutex<T>">
+  Creates a new async mutex.
+  
+  **Example:**
+  ```rust
+  use tokio::sync::Mutex;
+  use std::sync::Arc;
+  
+  #[tokio::main]
+  async fn main() {
+      let data = Arc::new(Mutex::new(0));
+      let data_clone = data.clone();
+      
+      tokio::spawn(async move {
+          let mut lock = data_clone.lock().await;
+          *lock += 1;
+      });
+      
+      let mut lock = data.lock().await;
+      *lock += 1;
+  }
+  ```
+</ParamField>
+
+<ParamField path="lock" type="async fn(&self) -> MutexGuard<'_, T>">
+  Acquires the mutex, waiting if necessary. Returns a guard that releases the lock when dropped.
+</ParamField>
+
+<ParamField path="try_lock" type="fn(&self) -> Result<MutexGuard<'_, T>, TryLockError>">
+  Attempts to acquire the mutex without waiting.
+</ParamField>
+
+<Info>
+Tokio's `Mutex` operates on a FIFO basis, ensuring fairness in lock acquisition order.
+</Info>
+
+<Warning>
+Only use async `Mutex` when you need to hold the lock across `.await` points. For protecting just data, prefer `std::sync::Mutex` or `parking_lot::Mutex`.
+</Warning>
+
+### RwLock
+
+<ParamField path="RwLock::new" type="fn(t: T) -> RwLock<T>">
+  Creates a new async reader-writer lock.
+  
+  **Example:**
+  ```rust
+  use tokio::sync::RwLock;
+  
+  #[tokio::main]
+  async fn main() {
+      let lock = RwLock::new(5);
+      
+      // Many reader locks can be held at once
+      {
+          let r1 = lock.read().await;
+          let r2 = lock.read().await;
+          assert_eq!(*r1, 5);
+          assert_eq!(*r2, 5);
+      } // read locks are dropped
+      
+      // Only one write lock can be held
+      {
+          let mut w = lock.write().await;
+          *w += 1;
+          assert_eq!(*w, 6);
+      }
+  }
+  ```
+</ParamField>
+
+<ParamField path="read" type="async fn(&self) -> RwLockReadGuard<'_, T>">
+  Acquires a read lock. Multiple readers can hold locks simultaneously.
+</ParamField>
+
+<ParamField path="write" type="async fn(&self) -> RwLockWriteGuard<'_, T>">
+  Acquires a write lock. Only one writer can hold the lock, and no readers can be active.
+</ParamField>
+
+### Semaphore
+
+<ParamField path="Semaphore::new" type="fn(permits: usize) -> Semaphore">
+  Creates a new semaphore with the given number of permits.
+  
+  **Example:**
+  ```rust
+  use tokio::sync::Semaphore;
+  use std::sync::Arc;
+  
+  #[tokio::main]
+  async fn main() {
+      let semaphore = Arc::new(Semaphore::new(3));
+      let mut join_handles = Vec::new();
+      
+      for i in 0..10 {
+          let permit = semaphore.clone();
+          join_handles.push(tokio::spawn(async move {
+              let _permit = permit.acquire().await.unwrap();
+              println!("Task {} is running", i);
+              // Only 3 tasks run concurrently
+          }));
+      }
+      
+      for handle in join_handles {
+          handle.await.unwrap();
+      }
+  }
+  ```
+</ParamField>
+
+<ParamField path="acquire" type="async fn(&self) -> Result<SemaphorePermit<'_>, AcquireError>">
+  Acquires a permit from the semaphore. Waits if no permits are available.
+</ParamField>
+
+<ParamField path="try_acquire" type="fn(&self) -> Result<SemaphorePermit<'_>, TryAcquireError>">
+  Attempts to acquire a permit without waiting.
+</ParamField>
+
+<ParamField path="add_permits" type="fn(&self, n: usize)">
+  Adds `n` new permits to the semaphore.
+</ParamField>
+
+### Barrier
+
+<ParamField path="Barrier::new" type="fn(n: usize) -> Barrier">
+  Creates a new barrier that waits for `n` tasks.
+  
+  **Example:**
+  ```rust
+  use tokio::sync::Barrier;
+  use std::sync::Arc;
+  
+  #[tokio::main]
+  async fn main() {
+      let barrier = Arc::new(Barrier::new(5));
+      let mut handles = Vec::new();
+      
+      for i in 0..5 {
+          let b = barrier.clone();
+          handles.push(tokio::spawn(async move {
+              println!("Task {} before barrier", i);
+              b.wait().await;
+              println!("Task {} after barrier", i);
+          }));
+      }
+      
+      for handle in handles {
+          handle.await.unwrap();
+      }
+  }
+  ```
+</ParamField>
+
+<ParamField path="wait" type="async fn(&self) -> BarrierWaitResult">
+  Waits until all tasks have reached the barrier.
+</ParamField>
+
+### Notify
+
+<ParamField path="Notify::new" type="fn() -> Notify">
+  Creates a new notification primitive.
+  
+  **Example:**
+  ```rust
+  use tokio::sync::Notify;
+  use std::sync::Arc;
+  
+  #[tokio::main]
+  async fn main() {
+      let notify = Arc::new(Notify::new());
+      let notify_clone = notify.clone();
+      
+      tokio::spawn(async move {
+          notify_clone.notified().await;
+          println!("Received notification!");
+      });
+      
+      println!("Sending notification...");
+      notify.notify_one();
+  }
+  ```
+</ParamField>
+
+<ParamField path="notify_one" type="fn(&self)">
+  Notifies one waiting task.
+</ParamField>
+
+<ParamField path="notify_waiters" type="fn(&self)">
+  Notifies all waiting tasks.
+</ParamField>
+
+<ParamField path="notified" type="fn(&self) -> Notified<'_>">
+  Returns a future that completes when notified.
+</ParamField>
+
+## Comparison with std
+
+<CardGroup cols={2}>
+  <Card title="Tokio Primitives" icon="bolt">
+    - Can be held across `.await`
+    - Integrate with async runtime
+    - Use cooperative scheduling
+    - Slightly more expensive
+  </Card>
+  
+  <Card title="std Primitives" icon="lock">
+    - Block the thread
+    - Work everywhere
+    - Use OS-level blocking
+    - Lower overhead for short critical sections
+  </Card>
+</CardGroup>
+
+## Best Practices
+
+<Steps>
+  <Step title="Choose the right primitive">
+    Use channels for message passing between tasks. Use Mutex/RwLock only for shared mutable state that needs protection.
+  </Step>
+  
+  <Step title="Prefer message passing">
+    Design systems using message passing rather than shared state when possible.
+  </Step>
+  
+  <Step title="Keep critical sections small">
+    Minimize the time locks are held, especially across `.await` points.
+  </Step>
+  
+  <Step title="Use bounded channels">
+    Bounded channels provide backpressure, preventing unbounded memory growth.
+  </Step>
+</Steps>
+
+<Tip>
+For configuration updates or state changes, use a `watch` channel. For work distribution, use `mpsc`. For pub/sub patterns, use `broadcast`.
+</Tip>

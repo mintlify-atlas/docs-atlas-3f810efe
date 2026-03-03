@@ -1,0 +1,384 @@
+---
+title: Custom Executor Integration
+description: Learn how to integrate Tokio with custom executor frameworks using TokioContext
+---
+
+The custom executor example demonstrates how to use Tokio's I/O and timer capabilities with any executor, not just the Tokio runtime. This is useful when you need to integrate Tokio into an existing application that uses a different async runtime or executor.
+
+## What You'll Learn
+
+<CardGroup cols={2}>
+  <Card title="Runtime Integration" icon="puzzle-piece">
+    Use Tokio with custom executor frameworks
+  </Card>
+  
+  <Card title="TokioContext" icon="layer-group">
+    Wrap futures to enter Tokio context on poll
+  </Card>
+  
+  <Card title="Hybrid Runtimes" icon="code-merge">
+    Combine multiple async runtimes in one application
+  </Card>
+  
+  <Card title="Resource Management" icon="server">
+    Run Tokio drivers on a background thread
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+You might need a custom executor integration when:
+
+- Migrating an existing application to Tokio gradually
+- Using a different executor for specific workload characteristics
+- Building a custom runtime with specialized scheduling
+- Integrating with frameworks that provide their own executors
+
+<Note>
+  For most applications, using Tokio's built-in runtime is recommended. Only use this approach if you have specific requirements that necessitate a custom executor.
+</Note>
+
+## Complete Code
+
+```rust
+// This example shows how to use the tokio runtime with any other executor
+//
+// The main components are a spawn fn that will wrap futures in a special future
+// that will always enter the tokio context on poll. This only spawns one extra thread
+// to manage and run the tokio drivers in the background.
+
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+fn main() {
+    let (tx, rx) = oneshot::channel();
+
+    my_custom_runtime::spawn(async move {
+        let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+
+        println!("addr: {:?}", listener.local_addr());
+
+        tx.send(()).unwrap();
+    });
+
+    futures::executor::block_on(rx).unwrap();
+}
+
+mod my_custom_runtime {
+    use once_cell::sync::Lazy;
+    use std::future::Future;
+    use tokio_util::context::TokioContext;
+
+    pub fn spawn(f: impl Future<Output = ()> + Send + 'static) {
+        EXECUTOR.spawn(f);
+    }
+
+    struct ThreadPool {
+        inner: futures::executor::ThreadPool,
+        rt: tokio::runtime::Runtime,
+    }
+
+    static EXECUTOR: Lazy<ThreadPool> = Lazy::new(|| {
+        // Spawn tokio runtime on a single background thread
+        // enabling IO and timers.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let inner = futures::executor::ThreadPool::builder().create().unwrap();
+
+        ThreadPool { inner, rt }
+    });
+
+    impl ThreadPool {
+        fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) {
+            let handle = self.rt.handle().clone();
+            self.inner.spawn_ok(TokioContext::new(f, handle));
+        }
+    }
+}
+```
+
+## How It Works
+
+The example creates a hybrid runtime that combines:
+
+1. **Tokio Runtime** - Runs on background threads to handle I/O and timers
+2. **Custom Executor** - Runs tasks using `futures::executor::ThreadPool`
+3. **TokioContext** - Bridges the two by entering Tokio context during polling
+
+```mermaid
+graph LR
+    A[Task] --> B[TokioContext Wrapper]
+    B --> C[Custom Executor]
+    C --> D[Tokio Drivers]
+    D --> E[I/O Events]
+```
+
+## Code Walkthrough
+
+<Steps>
+  <Step title="Initialize the hybrid runtime">
+    The `EXECUTOR` is lazily initialized with both a Tokio runtime and a custom thread pool:
+    
+    ```rust
+    static EXECUTOR: Lazy<ThreadPool> = Lazy::new(|| {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let inner = futures::executor::ThreadPool::builder().create().unwrap();
+        ThreadPool { inner, rt }
+    });
+    ```
+    
+    <Note>
+      `Lazy::new` ensures the runtime is only created once, on first use.
+    </Note>
+  </Step>
+  
+  <Step title="Wrap futures with TokioContext">
+    When spawning a task, wrap it with `TokioContext` to automatically enter the Tokio context:
+    
+    ```rust
+    fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) {
+        let handle = self.rt.handle().clone();
+        self.inner.spawn_ok(TokioContext::new(f, handle));
+    }
+    ```
+    
+    The `handle` provides access to the Tokio runtime from any thread.
+  </Step>
+  
+  <Step title="Use Tokio types in the custom executor">
+    Because the future is wrapped with `TokioContext`, you can use Tokio types like `TcpListener`:
+    
+    ```rust
+    my_custom_runtime::spawn(async move {
+        let listener = TcpListener::bind("0.0.0.0:0").await.unwrap();
+        println!("addr: {:?}", listener.local_addr());
+    });
+    ```
+  </Step>
+  
+  <Step title="Block on completion">
+    The example uses `futures::executor::block_on` to wait for the task to complete:
+    
+    ```rust
+    futures::executor::block_on(rx).unwrap();
+    ```
+    
+    This demonstrates that you can mix and match different executor functions.
+  </Step>
+</Steps>
+
+## Key Components
+
+### TokioContext
+
+```rust
+use tokio_util::context::TokioContext;
+
+let wrapped = TokioContext::new(future, handle);
+```
+
+`TokioContext` is a wrapper that:
+- Enters the Tokio context whenever the future is polled
+- Allows Tokio I/O and timers to function correctly
+- Is transparent - it doesn't change the future's output type
+
+### Runtime Handle
+
+```rust
+let handle = rt.handle().clone();
+```
+
+The `Handle` provides a reference to the Tokio runtime that can be:
+- Cloned cheaply
+- Sent across threads
+- Used to spawn tasks or enter the runtime context
+
+### Lazy Initialization
+
+```rust
+use once_cell::sync::Lazy;
+
+static EXECUTOR: Lazy<ThreadPool> = Lazy::new(|| {
+    // Initialization code
+});
+```
+
+The `Lazy` wrapper ensures thread-safe, one-time initialization of the global executor.
+
+## Performance Considerations
+
+<CardGroup cols={2}>
+  <Card title="Minimal Overhead" icon="gauge">
+    TokioContext adds negligible overhead per poll
+  </Card>
+  
+  <Card title="Shared Resources" icon="handshake">
+    Both executors share the same thread pool resources
+  </Card>
+  
+  <Card title="Single Driver Thread" icon="microchip">
+    Only one background thread needed for Tokio drivers
+  </Card>
+  
+  <Card title="Work Stealing" icon="shuffle">
+    Tasks can move between executor and Tokio threads
+  </Card>
+</CardGroup>
+
+## Runtime Configuration
+
+### Multi-threaded Runtime
+
+```rust
+let rt = tokio::runtime::Builder::new_multi_thread()
+    .enable_all()  // Enable I/O and timers
+    .build()
+    .unwrap();
+```
+
+This creates a full multi-threaded runtime with:
+- I/O driver for async networking
+- Timer driver for `sleep`, `timeout`, etc.
+- Work-stealing thread pool
+
+### Current Thread Runtime
+
+For single-threaded applications:
+
+```rust
+let rt = tokio::runtime::Builder::new_current_thread()
+    .enable_all()
+    .build()
+    .unwrap();
+```
+
+<Tip>
+  Use `new_current_thread()` if your custom executor already provides multi-threading.
+</Tip>
+
+## Advanced Patterns
+
+### Spawning from Any Thread
+
+```rust
+use tokio::runtime::Handle;
+
+// Get handle from anywhere
+let handle = Handle::current();
+
+// Spawn on Tokio runtime from any thread
+handle.spawn(async {
+    // This runs on Tokio's executor
+});
+```
+
+### Mixing Executors
+
+```rust
+// CPU-bound work on custom executor
+my_custom_runtime::spawn(async {
+    compute_heavy_task().await
+});
+
+// I/O-bound work on Tokio executor
+handle.spawn(async {
+    network_request().await
+});
+```
+
+### Graceful Shutdown
+
+```rust
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        // Shutdown the Tokio runtime
+        self.rt.shutdown_timeout(Duration::from_secs(5));
+    }
+}
+```
+
+## Testing
+
+You can test the example by running:
+
+```bash
+cargo run --example custom-executor
+```
+
+You should see output like:
+
+```
+addr: Ok(0.0.0.0:58392)
+```
+
+The port number will be different each time because we bind to port `0`, which lets the OS choose an available port.
+
+## Common Pitfalls
+
+<Warning>
+  **Don't forget to enable drivers**
+  
+  ```rust
+  // Wrong - no drivers enabled
+  Runtime::new().unwrap()
+  
+  // Correct - enable I/O and timers
+  Builder::new_multi_thread().enable_all().build().unwrap()
+  ```
+</Warning>
+
+<Warning>
+  **Don't drop the runtime handle**
+  
+  The `Handle` must live as long as tasks are using Tokio features. Store it in a long-lived location.
+</Warning>
+
+## Comparison: Custom vs. Native Runtime
+
+| Feature | Custom Executor | Native Tokio |
+|---------|----------------|---------------|
+| Setup Complexity | High | Low |
+| Performance | Good | Excellent |
+| Memory Usage | Higher (two runtimes) | Lower |
+| Maintenance | More complex | Simpler |
+| Use Case | Legacy integration | New projects |
+
+## When to Use This Pattern
+
+✅ **Use custom executor integration when:**
+- Migrating from another async runtime
+- Working with existing custom executor code
+- Need specific scheduling characteristics
+- Building a specialized framework
+
+❌ **Don't use it when:**
+- Starting a new project (use native Tokio)
+- Performance is critical (extra overhead)
+- No specific executor requirements
+
+## Related Examples
+
+<CardGroup cols={2}>
+  <Card title="Echo Server" icon="server" href="/examples/echo-server">
+    See how to build servers with native Tokio runtime
+  </Card>
+  
+  <Card title="Chat Server" icon="comments" href="/examples/chat">
+    Explore concurrent task management patterns
+  </Card>
+</CardGroup>
+
+## Further Reading
+
+- [Tokio Runtime Documentation](https://docs.rs/tokio/latest/tokio/runtime/)
+- [TokioContext API](https://docs.rs/tokio-util/latest/tokio_util/context/)
+- [Runtime Builder](https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html)
+
+<Tip>
+  For most applications, stick with Tokio's native runtime. Only use custom executors when you have a specific need that justifies the added complexity.
+</Tip>

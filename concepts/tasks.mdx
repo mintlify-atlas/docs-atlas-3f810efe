@@ -1,0 +1,341 @@
+---
+title: Tasks
+description: Working with lightweight asynchronous tasks in Tokio
+---
+
+A task is a lightweight, non-blocking unit of execution in Tokio. Tasks are similar to OS threads but are managed by the Tokio runtime instead of the operating system.
+
+## What are tasks?
+
+If you're familiar with other async runtimes, you can think of Tokio tasks as:
+- **Go's goroutines** - Lightweight concurrent execution units
+- **Kotlin's coroutines** - Structured concurrency primitives
+- **Erlang's processes** - Isolated units of computation
+
+Key characteristics:
+
+### Lightweight
+
+Tasks are scheduled by the Tokio runtime rather than the OS. Creating, switching between, and destroying tasks has very low overhead compared to OS threads.
+
+<Tip>
+Creating thousands or even millions of tasks is practical with Tokio.
+</Tip>
+
+### Cooperatively scheduled
+
+Unlike OS threads which use preemptive multitasking, tasks implement cooperative multitasking. A task runs until it yields at an `.await` point, then the runtime switches to another task.
+
+### Non-blocking
+
+Tasks must never block the thread. When a task cannot continue, it yields to the runtime, allowing other tasks to execute.
+
+<Warning>
+Tasks should not perform system calls or operations that block a thread. Use `spawn_blocking` for blocking operations.
+</Warning>
+
+## Spawning tasks
+
+The [`task::spawn`](https://docs.rs/tokio/latest/tokio/task/fn.spawn.html) function creates a new task:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    task::spawn(async {
+        // Perform work here
+        println!("Hello from a spawned task!");
+    });
+}
+```
+
+### Returning values from tasks
+
+`spawn` returns a [`JoinHandle`](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html) that can be awaited to get the task's result:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let join = task::spawn(async {
+        // Do some work
+        "hello world!"
+    });
+
+    // Await the result
+    let result = join.await?;
+    assert_eq!(result, "hello world!");
+    
+    Ok(())
+}
+```
+
+### Running multiple tasks in parallel
+
+Store join handles in a vector to run multiple tasks concurrently:
+
+```rust
+use tokio::task;
+
+async fn my_background_op(id: i32) -> String {
+    format!("Task {} completed", id)
+}
+
+#[tokio::main]
+async fn main() {
+    let ops = vec![1, 2, 3, 4, 5];
+    let mut tasks = Vec::with_capacity(ops.len());
+    
+    for op in ops {
+        tasks.push(tokio::spawn(my_background_op(op)));
+    }
+
+    let mut outputs = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        outputs.push(task.await.unwrap());
+    }
+    
+    println!("Results: {:?}", outputs);
+}
+```
+
+### Spawning from a TCP server
+
+A common pattern is spawning a task per connection:
+
+```rust
+use tokio::net::{TcpListener, TcpStream};
+use std::io;
+
+async fn process(socket: TcpStream) {
+    // Handle the connection
+}
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move {
+            process(socket).await
+        });
+    }
+}
+```
+
+## Task cancellation
+
+Tasks can be cancelled using abort methods:
+
+```rust
+use tokio::task;
+use tokio::time::{sleep, Duration};
+
+#[tokio::main]
+async fn main() {
+    let handle = task::spawn(async {
+        sleep(Duration::from_secs(10)).await;
+        "completed"
+    });
+
+    // Cancel the task
+    handle.abort();
+
+    // Check if cancelled
+    match handle.await {
+        Ok(_) => println!("Task completed"),
+        Err(e) if e.is_cancelled() => println!("Task was cancelled"),
+        Err(e) => println!("Task panicked: {:?}", e),
+    }
+}
+```
+
+<Note>
+When a task is aborted, it stops at the next `.await` point and all local variables are dropped by running their destructors.
+</Note>
+
+### Abort handles
+
+Use [`AbortHandle`](https://docs.rs/tokio/latest/tokio/task/struct.AbortHandle.html) to cancel tasks without waiting:
+
+```rust
+let handle = task::spawn(async {
+    // Long running work
+});
+
+let abort_handle = handle.abort_handle();
+
+// Later, from another task:
+abort_handle.abort();
+```
+
+<Warning>
+Tasks spawned with `spawn_blocking` cannot be aborted because they run blocking code.
+</Warning>
+
+## Blocking and yielding
+
+### spawn_blocking
+
+Use `spawn_blocking` for CPU-intensive or blocking operations:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let join = task::spawn_blocking(|| {
+        // Expensive computation or blocking I/O
+        let mut sum = 0;
+        for i in 0..1_000_000 {
+            sum += i;
+        }
+        sum
+    });
+
+    let result = join.await?;
+    println!("Result: {}", result);
+    
+    Ok(())
+}
+```
+
+<Tip>
+Tokio maintains a dedicated thread pool for blocking operations. The pool grows on demand up to a configurable limit.
+</Tip>
+
+### block_in_place
+
+On the multi-threaded runtime, `block_in_place` transitions the current worker thread to a blocking thread:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let result = task::block_in_place(|| {
+        // Blocking operation
+        "completed"
+    });
+
+    assert_eq!(result, "completed");
+}
+```
+
+<Warning>
+`block_in_place` panics if called from a current-thread runtime.
+</Warning>
+
+### yield_now
+
+Explicitly yield control back to the scheduler:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    task::spawn(async {
+        println!("spawned task");
+    });
+
+    // Yield to allow spawned task to run
+    task::yield_now().await;
+    
+    println!("main task");
+}
+```
+
+## Cooperative scheduling
+
+Tokio uses a cooperative budget system to ensure fairness. Each task has a budget that is consumed when polling futures. When the budget is exhausted, the task yields.
+
+From `tokio/src/task/coop/mod.rs`:
+
+```rust
+// The task budget is automatically managed by the runtime
+// Tasks yield after consuming their budget to prevent starvation
+```
+
+<Note>
+Most applications don't need to interact with the cooperative scheduling system directly. It works automatically.
+</Note>
+
+## Error handling
+
+When a task panics, awaiting its `JoinHandle` returns a [`JoinError`](https://docs.rs/tokio/latest/tokio/task/struct.JoinError.html):
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let join = task::spawn(async {
+        panic!("something went wrong!");
+    });
+
+    match join.await {
+        Ok(_) => println!("Task completed successfully"),
+        Err(e) if e.is_panic() => println!("Task panicked"),
+        Err(e) => println!("Task failed: {:?}", e),
+    }
+}
+```
+
+## Task local storage
+
+Use [`task_local!`](https://docs.rs/tokio/latest/tokio/macro.task_local.html) to create task-local values:
+
+```rust
+use tokio::task;
+
+tokio::task_local! {
+    static REQUEST_ID: u64;
+}
+
+#[tokio::main]
+async fn main() {
+    REQUEST_ID.scope(123, async {
+        // REQUEST_ID is 123 in this scope
+        println!("Processing request {}", REQUEST_ID.get());
+    }).await;
+}
+```
+
+## JoinSet for managing task groups
+
+Use [`JoinSet`](https://docs.rs/tokio/latest/tokio/task/struct.JoinSet.html) to manage multiple tasks:
+
+```rust
+use tokio::task::JoinSet;
+
+#[tokio::main]
+async fn main() {
+    let mut set = JoinSet::new();
+
+    for i in 0..10 {
+        set.spawn(async move {
+            // Do work
+            i * 2
+        });
+    }
+
+    // Wait for all tasks
+    while let Some(res) = set.join_next().await {
+        println!("Task result: {:?}", res);
+    }
+}
+```
+
+## Feature flags
+
+- `rt` - Enables `spawn`, `JoinHandle`, and other task APIs
+
+## Related topics
+
+- [Runtime](/concepts/runtime) - Understanding the Tokio runtime
+- [Async I/O](/concepts/async-io) - Working with asynchronous I/O

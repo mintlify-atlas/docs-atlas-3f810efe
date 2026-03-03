@@ -1,0 +1,468 @@
+---
+title: Performance Optimization
+description: Best practices and techniques for optimizing Tokio runtime performance
+---
+
+Tokio is designed for high-performance async I/O. This guide covers key optimization strategies and runtime configuration for production workloads.
+
+## Runtime Configuration
+
+### Worker Threads
+
+By default, Tokio spawns one worker thread per CPU core. You can customize this:
+
+```rust
+use tokio::runtime::Builder;
+
+fn main() {
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .build()
+        .unwrap();
+    
+    runtime.block_on(async {
+        // Your async code
+    });
+}
+```
+
+**Environment Variable Override:**
+
+```bash
+TOKIO_WORKER_THREADS=8 cargo run
+```
+
+<Tip>
+  Start with the default (number of CPU cores) and only adjust if profiling shows thread contention or underutilization.
+</Tip>
+
+### Choosing the Right Scheduler
+
+#### Current-Thread Scheduler
+
+Single-threaded, runs all tasks on the current thread:
+
+```rust
+let runtime = Builder::new_current_thread()
+    .enable_all()
+    .build()
+    .unwrap();
+```
+
+**Use when:**
+- You have a small number of tasks
+- Tasks are primarily I/O-bound
+- You want minimal overhead
+- Your application is single-threaded
+
+#### Multi-Thread Scheduler
+
+Work-stealing scheduler that distributes tasks across multiple threads:
+
+```rust
+let runtime = Builder::new_multi_thread()
+    .worker_threads(4)
+    .enable_all()
+    .build()
+    .unwrap();
+```
+
+**Use when:**
+- You have many concurrent tasks
+- You want to utilize multiple CPU cores
+- Tasks have varying execution times
+- Building a high-throughput server
+
+<Note>
+  The multi-thread scheduler is required for `block_in_place`. The current-thread scheduler will panic if you call `block_in_place`.
+</Note>
+
+## Task Spawning Optimization
+
+### Minimize Task Creation Overhead
+
+Spawning tasks has overhead. Batch operations when possible:
+
+```rust
+// ❌ Bad: Spawning too many small tasks
+for i in 0..10000 {
+    tokio::spawn(async move {
+        process_item(i).await;
+    });
+}
+
+// ✅ Good: Batch processing
+let chunk_size = 100;
+for chunk in (0..10000).collect::<Vec<_>>().chunks(chunk_size) {
+    let chunk = chunk.to_vec();
+    tokio::spawn(async move {
+        for i in chunk {
+            process_item(i).await;
+        }
+    });
+}
+```
+
+### Use `spawn_local` for `!Send` Types
+
+When tasks don't need to move between threads:
+
+```rust
+use tokio::task;
+
+tokio::task::LocalSet::new().run_until(async {
+    task::spawn_local(async {
+        // Can use !Send types here
+        let local_data = std::rc::Rc::new(42);
+    }).await.unwrap();
+}).await;
+```
+
+## I/O Optimization
+
+### Buffer Sizes
+
+Use appropriate buffer sizes for your workload:
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+
+// For small messages
+let mut buf = [0u8; 4096];
+
+// For large transfers
+let mut buf = vec![0u8; 64 * 1024]; // 64 KB
+
+let n = stream.read(&mut buf).await?;
+```
+
+<Tip>
+  Common buffer sizes: 4 KB for small messages, 16-64 KB for bulk transfers, 8 KB for HTTP.
+</Tip>
+
+### Vectored I/O
+
+Use vectored I/O for scatter/gather operations:
+
+```rust
+use tokio::io::AsyncWriteExt;
+use std::io::IoSlice;
+
+let header = b"HTTP/1.1 200 OK\r\n";
+let body = b"Hello, World!";
+
+let bufs = &[
+    IoSlice::new(header),
+    IoSlice::new(body),
+];
+
+stream.write_vectored(bufs).await?;
+```
+
+### Split Sockets
+
+Split sockets for concurrent reads and writes:
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+
+let stream = TcpStream::connect("127.0.0.1:8080").await?;
+let (mut reader, mut writer) = stream.into_split();
+
+tokio::spawn(async move {
+    // Read in one task
+    let mut buf = [0; 1024];
+    loop {
+        let n = reader.read(&mut buf).await.unwrap();
+        if n == 0 { break; }
+    }
+});
+
+tokio::spawn(async move {
+    // Write in another task
+    writer.write_all(b"Hello").await.unwrap();
+});
+```
+
+## Channel Selection and Tuning
+
+### Choosing the Right Channel
+
+| Channel | Use Case | Capacity |
+|---------|----------|----------|
+| **oneshot** | Single value, one sender, one receiver | 1 |
+| **mpsc** | Multiple senders, single receiver | Bounded/Unbounded |
+| **broadcast** | Multiple receivers, clones messages | Bounded |
+| **watch** | Single value, many receivers, latest value only | 1 |
+
+### Bounded vs Unbounded Channels
+
+```rust
+use tokio::sync::mpsc;
+
+// ✅ Bounded: Apply backpressure
+let (tx, rx) = mpsc::channel(100);
+
+// ⚠️ Unbounded: Can cause memory issues
+let (tx, rx) = mpsc::unbounded_channel();
+```
+
+<Warning>
+  Use unbounded channels only when you're certain the producer won't overwhelm the consumer. Bounded channels provide backpressure.
+</Warning>
+
+### Channel Capacity Sizing
+
+```rust
+// For low-latency, single-producer scenarios
+let (tx, rx) = mpsc::channel(1);
+
+// For moderate throughput
+let (tx, rx) = mpsc::channel(100);
+
+// For high-throughput, multiple producers
+let (tx, rx) = mpsc::channel(1000);
+```
+
+## Blocking Operations
+
+### Thread Pool Configuration
+
+Configure the blocking thread pool size:
+
+```rust
+use tokio::runtime::Builder;
+use std::time::Duration;
+
+let runtime = Builder::new_multi_thread()
+    .max_blocking_threads(512) // Default is 512
+    .thread_keep_alive(Duration::from_secs(10))
+    .build()
+    .unwrap();
+```
+
+<Note>
+  Blocking threads are spawned on-demand and kept alive for the configured duration when idle.
+</Note>
+
+### Limit Concurrent Blocking Operations
+
+Use a semaphore to limit concurrent blocking operations:
+
+```rust
+use tokio::sync::Semaphore;
+use std::sync::Arc;
+
+let semaphore = Arc::new(Semaphore::new(10)); // Max 10 concurrent
+
+for i in 0..100 {
+    let permit = semaphore.clone().acquire_owned().await.unwrap();
+    tokio::task::spawn_blocking(move || {
+        // CPU-intensive work
+        expensive_computation(i);
+        drop(permit); // Release permit
+    });
+}
+```
+
+### Consider Dedicated Thread Pools
+
+For CPU-bound work, use a dedicated thread pool like [rayon](https://docs.rs/rayon):
+
+```rust
+use tokio::sync::oneshot;
+
+let (tx, rx) = oneshot::channel();
+
+rayon::spawn(move || {
+    let result = expensive_cpu_work();
+    tx.send(result).unwrap();
+});
+
+let result = rx.await.unwrap();
+```
+
+## Memory Management
+
+### Reuse Buffers
+
+Use object pools for frequently allocated buffers:
+
+```rust
+use bytes::{BytesMut, BufMut};
+
+let mut buf = BytesMut::with_capacity(4096);
+
+loop {
+    buf.clear(); // Reuse buffer
+    let n = stream.read_buf(&mut buf).await?;
+    if n == 0 { break; }
+    process(&buf[..n]);
+}
+```
+
+### Use `bytes` Crate
+
+The `bytes` crate provides efficient buffer types:
+
+```rust
+use bytes::{Bytes, BytesMut};
+
+// Zero-copy slicing
+let bytes = Bytes::from(&b"hello world"[..]);
+let slice = bytes.slice(0..5); // "hello", no copy
+
+// Efficient building
+let mut buf = BytesMut::with_capacity(1024);
+buf.extend_from_slice(b"data");
+let frozen: Bytes = buf.freeze();
+```
+
+## Time and Timers
+
+### Batch Timers
+
+Avoid creating too many individual timers:
+
+```rust
+use tokio::time::{interval, Duration};
+
+// ✅ Good: Single interval for periodic work
+let mut interval = interval(Duration::from_secs(1));
+loop {
+    interval.tick().await;
+    perform_periodic_task().await;
+}
+
+// ❌ Bad: Many individual sleeps
+loop {
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    perform_periodic_task().await;
+}
+```
+
+### Timer Resolution
+
+Tokio's timer resolution is typically 1ms:
+
+```rust
+use tokio::time::{sleep, Duration};
+
+// This will sleep for at least 1ms, possibly slightly more
+sleep(Duration::from_micros(100)).await;
+```
+
+## Monitoring and Metrics
+
+### Enable Runtime Metrics
+
+```rust
+use tokio::runtime::Builder;
+
+let runtime = Builder::new_multi_thread()
+    .enable_all()
+    .build()
+    .unwrap();
+
+// Get runtime metrics
+let metrics = runtime.metrics();
+println!("Active tasks: {}", metrics.num_workers());
+```
+
+### Poll Count Histogram (Unstable)
+
+```toml .cargo/config.toml
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+```rust
+let runtime = Builder::new_multi_thread()
+    .enable_metrics_poll_count_histogram()
+    .build()
+    .unwrap();
+```
+
+## Event Loop Configuration
+
+### Event Interval
+
+Control how often I/O events are processed:
+
+```rust
+// Process I/O events every 61 ticks (default)
+let runtime = Builder::new_multi_thread()
+    .event_interval(61)
+    .build()
+    .unwrap();
+```
+
+<Note>
+  Lower values increase responsiveness but may reduce throughput. Higher values batch more work but increase latency.
+</Note>
+
+### Global Queue Interval
+
+Control work-stealing behavior:
+
+```rust
+let runtime = Builder::new_multi_thread()
+    .global_queue_interval(31) // Check global queue every 31 ticks
+    .build()
+    .unwrap();
+```
+
+## Profiling and Debugging
+
+### Using `tokio-console`
+
+Enable console subscriber for task debugging:
+
+```toml Cargo.toml
+[dependencies]
+console-subscriber = "0.2"
+```
+
+```rust
+console_subscriber::init();
+
+let runtime = Builder::new_multi_thread()
+    .build()
+    .unwrap();
+```
+
+Run `tokio-console` to visualize task execution.
+
+### Trace Events (Unstable)
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["full", "tracing"] }
+```
+
+```toml .cargo/config.toml
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+## Performance Checklist
+
+- [ ] Use the multi-thread scheduler for high-throughput applications
+- [ ] Configure appropriate buffer sizes (4-64 KB)
+- [ ] Use bounded channels with appropriate capacity
+- [ ] Limit concurrent blocking operations with semaphores
+- [ ] Reuse buffers instead of allocating new ones
+- [ ] Use `spawn_blocking` for blocking I/O, not CPU-bound work
+- [ ] Consider dedicated thread pools (rayon) for CPU-intensive tasks
+- [ ] Batch timer operations with `interval`
+- [ ] Profile with `tokio-console` to identify bottlenecks
+- [ ] Use `bytes` crate for efficient buffer management
+- [ ] Split sockets for concurrent read/write operations
+- [ ] Apply backpressure with bounded channels and semaphores
+
+<Tip>
+  Always profile before and after optimizations. Use tools like `tokio-console`, `perf`, and `flamegraph` to identify actual bottlenecks.
+</Tip>

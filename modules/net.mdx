@@ -1,0 +1,404 @@
+---
+title: "tokio::net"
+description: "TCP/UDP/Unix networking types for asynchronous I/O operations"
+---
+
+The `tokio::net` module provides TCP, UDP, and Unix networking types for building asynchronous network applications.
+
+## Overview
+
+This module contains networking types similar to those in the standard library, but designed for use with Tokio's asynchronous runtime. All types are non-blocking and integrate with Tokio's task system.
+
+### Available Types
+
+- **TCP**: `TcpListener` and `TcpStream` for TCP communication
+- **UDP**: `UdpSocket` for UDP communication  
+- **Unix Domain Sockets**: `UnixListener`, `UnixStream`, and `UnixDatagram` (Unix only)
+- **Named Pipes**: Available on Windows via `tokio::net::windows::named_pipe`
+
+## TCP
+
+### TcpListener
+
+A TCP socket server that listens for incoming connections.
+
+```rust
+use tokio::net::TcpListener;
+use std::io;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (socket, addr) = listener.accept().await?;
+        println!("New connection from: {}", addr);
+        // Process socket...
+    }
+}
+```
+
+#### Methods
+
+<ParamField path="bind" type="async fn">
+  Creates a new TcpListener bound to the specified address.
+  
+  **Parameters:**
+  - `addr: impl ToSocketAddrs` - The address to bind to
+  
+  **Returns:** `io::Result<TcpListener>`
+  
+  ```rust
+  let listener = TcpListener::bind("127.0.0.1:8080").await?;
+  ```
+</ParamField>
+
+<ParamField path="accept" type="async fn">
+  Accepts a new incoming connection.
+  
+  **Returns:** `io::Result<(TcpStream, SocketAddr)>`
+  
+  Returns the connected stream and the remote peer's address. This method is cancel safe.
+  
+  ```rust
+  let (stream, addr) = listener.accept().await?;
+  ```
+</ParamField>
+
+<ParamField path="local_addr" type="fn">
+  Returns the local socket address this listener is bound to.
+  
+  **Returns:** `io::Result<SocketAddr>`
+  
+  ```rust
+  let addr = listener.local_addr()?;
+  ```
+</ParamField>
+
+<ParamField path="from_std" type="fn">
+  Creates a TcpListener from a `std::net::TcpListener`.
+  
+  **Parameters:**
+  - `listener: std::net::TcpListener` - Must be in non-blocking mode
+  
+  **Returns:** `io::Result<TcpListener>`
+</ParamField>
+
+### TcpStream
+
+A TCP stream between a local and remote socket.
+
+```rust
+use tokio::net::TcpStream;
+use tokio::io::AsyncWriteExt;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+    stream.write_all(b"hello world!").await?;
+    Ok(())
+}
+```
+
+#### Methods
+
+<ParamField path="connect" type="async fn">
+  Opens a TCP connection to a remote host.
+  
+  **Parameters:**
+  - `addr: impl ToSocketAddrs` - Address of the remote host
+  
+  **Returns:** `io::Result<TcpStream>`
+  
+  ```rust
+  let stream = TcpStream::connect("127.0.0.1:8080").await?;
+  ```
+</ParamField>
+
+<ParamField path="local_addr" type="fn">
+  Returns the local socket address.
+  
+  **Returns:** `io::Result<SocketAddr>`
+</ParamField>
+
+<ParamField path="peer_addr" type="fn">
+  Returns the remote socket address.
+  
+  **Returns:** `io::Result<SocketAddr>`
+</ParamField>
+
+<ParamField path="readable" type="async fn">
+  Waits for the socket to become readable.
+  
+  **Returns:** `io::Result<()>`
+  
+  Usually paired with `try_read()`. This method is cancel safe.
+</ParamField>
+
+<ParamField path="try_read" type="fn">
+  Tries to read data from the stream without blocking.
+  
+  **Parameters:**
+  - `buf: &mut [u8]` - Buffer to read into
+  
+  **Returns:** `io::Result<usize>` - Number of bytes read
+  
+  Returns `WouldBlock` error if the socket is not ready.
+</ParamField>
+
+<ParamField path="writable" type="async fn">
+  Waits for the socket to become writable.
+  
+  **Returns:** `io::Result<()>`
+  
+  Usually paired with `try_write()`. This method is cancel safe.
+</ParamField>
+
+<ParamField path="try_write" type="fn">
+  Tries to write data to the stream without blocking.
+  
+  **Parameters:**
+  - `buf: &[u8]` - Data to write
+  
+  **Returns:** `io::Result<usize>` - Number of bytes written
+</ParamField>
+
+<ParamField path="set_nodelay" type="fn">
+  Sets the value of the TCP_NODELAY option.
+  
+  **Parameters:**
+  - `nodelay: bool` - If true, disables Nagle's algorithm
+  
+  **Returns:** `io::Result<()>`
+</ParamField>
+
+<ParamField path="nodelay" type="fn">
+  Gets the value of the TCP_NODELAY option.
+  
+  **Returns:** `io::Result<bool>`
+</ParamField>
+
+<ParamField path="set_ttl" type="fn">
+  Sets the value for the IP_TTL option.
+  
+  **Parameters:**
+  - `ttl: u32` - Time-to-live value
+  
+  **Returns:** `io::Result<()>`
+</ParamField>
+
+## UDP
+
+### UdpSocket
+
+A UDP socket for connectionless communication.
+
+```rust
+use tokio::net::UdpSocket;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let sock = UdpSocket::bind("0.0.0.0:8080").await?;
+    let mut buf = [0; 1024];
+    
+    loop {
+        let (len, addr) = sock.recv_from(&mut buf).await?;
+        println!("{} bytes received from {}", len, addr);
+        
+        let len = sock.send_to(&buf[..len], addr).await?;
+        println!("{} bytes sent", len);
+    }
+}
+```
+
+#### Connection Modes
+
+**One-to-Many (bind)**: Use `bind()`, `send_to()`, and `recv_from()` to communicate with multiple addresses.
+
+**One-to-One (connect)**: Use `connect()` to associate with a single address, then use `send()` and `recv()`.
+
+```rust
+// Connect mode example
+let sock = UdpSocket::bind("0.0.0.0:8080").await?;
+sock.connect("127.0.0.1:59611").await?;
+
+let mut buf = [0; 1024];
+loop {
+    let len = sock.recv(&mut buf).await?;
+    sock.send(&buf[..len]).await?;
+}
+```
+
+#### Methods
+
+<ParamField path="bind" type="async fn">
+  Creates a UDP socket bound to the specified address.
+  
+  **Parameters:**
+  - `addr: impl ToSocketAddrs` - Address to bind to
+  
+  **Returns:** `io::Result<UdpSocket>`
+  
+  ```rust
+  let socket = UdpSocket::bind("0.0.0.0:8080").await?;
+  ```
+</ParamField>
+
+<ParamField path="connect" type="async fn">
+  Connects the socket to a remote address.
+  
+  **Parameters:**
+  - `addr: impl ToSocketAddrs` - Remote address
+  
+  **Returns:** `io::Result<()>`
+  
+  After connecting, only `send()` and `recv()` can be used.
+</ParamField>
+
+<ParamField path="send_to" type="async fn">
+  Sends data to the specified address.
+  
+  **Parameters:**
+  - `buf: &[u8]` - Data to send
+  - `target: impl ToSocketAddrs` - Destination address
+  
+  **Returns:** `io::Result<usize>` - Number of bytes sent
+</ParamField>
+
+<ParamField path="recv_from" type="async fn">
+  Receives data and returns the sender's address.
+  
+  **Parameters:**
+  - `buf: &mut [u8]` - Buffer to receive into
+  
+  **Returns:** `io::Result<(usize, SocketAddr)>`
+  
+  Returns the number of bytes read and the origin address.
+</ParamField>
+
+<ParamField path="send" type="async fn">
+  Sends data on a connected socket.
+  
+  **Parameters:**
+  - `buf: &[u8]` - Data to send
+  
+  **Returns:** `io::Result<usize>`
+  
+  The socket must be connected via `connect()` first.
+</ParamField>
+
+<ParamField path="recv" type="async fn">
+  Receives data on a connected socket.
+  
+  **Parameters:**
+  - `buf: &mut [u8]` - Buffer to receive into
+  
+  **Returns:** `io::Result<usize>`
+</ParamField>
+
+<ParamField path="local_addr" type="fn">
+  Returns the local socket address.
+  
+  **Returns:** `io::Result<SocketAddr>`
+</ParamField>
+
+## Sharing UDP Sockets
+
+UDP sockets can be shared across tasks using `Arc` without needing a `Mutex`:
+
+```rust
+use tokio::{net::UdpSocket, sync::mpsc};
+use std::{io, net::SocketAddr, sync::Arc};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let sock = UdpSocket::bind("0.0.0.0:8080").await?;
+    let r = Arc::new(sock);
+    let s = r.clone();
+    let (tx, mut rx) = mpsc::channel::<(Vec<u8>, SocketAddr)>(1_000);
+
+    tokio::spawn(async move {
+        while let Some((bytes, addr)) = rx.recv().await {
+            s.send_to(&bytes, &addr).await.unwrap();
+        }
+    });
+
+    let mut buf = [0; 1024];
+    loop {
+        let (len, addr) = r.recv_from(&mut buf).await?;
+        tx.send((buf[..len].to_vec(), addr)).await.unwrap();
+    }
+}
+```
+
+## Unix Domain Sockets
+
+<Note>
+  Unix domain sockets are only available on Unix platforms.
+</Note>
+
+### UnixListener
+
+A Unix socket server listening for connections.
+
+```rust
+use tokio::net::UnixListener;
+
+let listener = UnixListener::bind("/tmp/socket")?;
+
+loop {
+    let (stream, addr) = listener.accept().await?;
+    // Handle stream...
+}
+```
+
+### UnixStream
+
+A Unix stream socket.
+
+```rust
+use tokio::net::UnixStream;
+
+let stream = UnixStream::connect("/tmp/socket").await?;
+```
+
+### UnixDatagram
+
+A Unix datagram socket.
+
+```rust
+use tokio::net::UnixDatagram;
+
+let socket = UnixDatagram::bind("/tmp/socket")?;
+```
+
+## Error Handling
+
+All networking operations return `io::Result<T>` which can be handled using Rust's `?` operator:
+
+```rust
+use tokio::net::TcpListener;
+use std::io;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    
+    loop {
+        match listener.accept().await {
+            Ok((socket, addr)) => {
+                println!("New client: {:?}", addr);
+            }
+            Err(e) => {
+                eprintln!("Accept error: {}", e);
+            }
+        }
+    }
+}
+```
+
+## See Also
+
+- [AsyncRead](https://docs.rs/tokio/latest/tokio/io/trait.AsyncRead.html) - Trait for asynchronous reading
+- [AsyncWrite](https://docs.rs/tokio/latest/tokio/io/trait.AsyncWrite.html) - Trait for asynchronous writing
+- [ToSocketAddrs](https://docs.rs/tokio/latest/tokio/net/trait.ToSocketAddrs.html) - Trait for address resolution

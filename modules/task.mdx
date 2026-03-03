@@ -1,0 +1,404 @@
+---
+title: Task
+description: Asynchronous tasks and task management in Tokio
+---
+
+Asynchronous green-threads for executing concurrent work in Tokio.
+
+## What are Tasks?
+
+A task is a light weight, non-blocking unit of execution. Tasks are similar to OS threads but are managed by the Tokio runtime instead of the OS scheduler. They are sometimes called green threads, similar to Go's goroutines, Kotlin's coroutines, or Erlang's processes.
+
+### Key Characteristics
+
+<CardGroup cols={3}>
+  <Card title="Light Weight" icon="feather">
+    Creating, running, and destroying tasks has very low overhead compared to OS threads.
+  </Card>
+  
+  <Card title="Cooperative" icon="handshake">
+    Tasks use cooperative multitasking, yielding control at `.await` points rather than being preempted.
+  </Card>
+  
+  <Card title="Non-Blocking" icon="bolt">
+    Tasks must not perform blocking operations that would prevent other tasks from executing.
+  </Card>
+</CardGroup>
+
+## Spawning Tasks
+
+### spawn
+
+<ParamField path="spawn" type="fn<F>(future: F) -> JoinHandle<F::Output>">
+  Spawns a new asynchronous task, returning a `JoinHandle` for it.
+  
+  **Type Constraints:**
+  - `F: Future + Send + 'static`
+  - `F::Output: Send + 'static`
+  
+  **Parameters:**
+  - `future`: The async block or future to execute
+  
+  **Returns:** `JoinHandle<F::Output>` - A handle to await the task's result
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  
+  #[tokio::main]
+  async fn main() {
+      let handle = task::spawn(async {
+          // perform some work here...
+          "result"
+      });
+      
+      let result = handle.await.unwrap();
+      println!("Task returned: {}", result);
+  }
+  ```
+</ParamField>
+
+<Info>
+The provided future will start running in the background immediately when `spawn` is called, even if you don't await the returned `JoinHandle`.
+</Info>
+
+### Spawning Multiple Tasks
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let ops = vec![1, 2, 3, 4, 5];
+    let mut tasks = Vec::new();
+    
+    for op in ops {
+        tasks.push(task::spawn(async move {
+            // Perform work with op
+            op * 2
+        }));
+    }
+    
+    for task in tasks {
+        let result = task.await.unwrap();
+        println!("Result: {}", result);
+    }
+}
+```
+
+## JoinHandle
+
+A `JoinHandle` is returned by `spawn` and represents the spawned task. It can be awaited to get the task's result.
+
+### Methods
+
+<ParamField path="await" type="async fn(self) -> Result<T, JoinError>">
+  Waits for the task to complete and returns its result.
+  
+  **Returns:**
+  - `Ok(T)`: Task completed successfully with output T
+  - `Err(JoinError)`: Task panicked or was cancelled
+  
+  **Example:**
+  ```rust
+  let handle = tokio::spawn(async {
+      42
+  });
+  
+  match handle.await {
+      Ok(result) => println!("Task returned: {}", result),
+      Err(e) => eprintln!("Task failed: {}", e),
+  }
+  ```
+</ParamField>
+
+<ParamField path="abort" type="fn(&self)">
+  Aborts the task. The task will be cancelled at the next `.await` point.
+  
+  **Example:**
+  ```rust
+  let handle = tokio::spawn(async {
+      loop {
+          tokio::time::sleep(Duration::from_secs(1)).await;
+          println!("Still running...");
+      }
+  });
+  
+  // Cancel the task
+  handle.abort();
+  ```
+</ParamField>
+
+<ParamField path="is_finished" type="fn(&self) -> bool">
+  Checks if the task has completed. Returns `true` if the task has finished, `false` otherwise.
+  
+  **Example:**
+  ```rust
+  if handle.is_finished() {
+      println!("Task completed");
+  }
+  ```
+</ParamField>
+
+## Cancellation
+
+Tasks can be cancelled using the `abort()` method on their `JoinHandle` or `AbortHandle`.
+
+<Warning>
+When a task is aborted, it will stop at the next `.await` point. All local variables are destroyed by running their destructors. Awaiting the `JoinHandle` will return a cancelled error.
+</Warning>
+
+### AbortHandle
+
+<ParamField path="AbortHandle" type="struct">
+  A handle that can abort a task. Unlike `JoinHandle`, it cannot await the result, but multiple `AbortHandle`s can exist for a single task.
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  
+  let handle = task::spawn(async {
+      // long running task
+  });
+  
+  let abort_handle = handle.abort_handle();
+  
+  // Later, from another part of code:
+  abort_handle.abort();
+  ```
+</ParamField>
+
+## Blocking Operations
+
+### spawn_blocking
+
+<ParamField path="spawn_blocking" type="fn<F, R>(f: F) -> JoinHandle<R>">
+  Spawns a blocking function on a dedicated thread pool.
+  
+  **Type Constraints:**
+  - `F: FnOnce() -> R + Send + 'static`
+  - `R: Send + 'static`
+  
+  **Parameters:**
+  - `f`: The blocking function to execute
+  
+  **Returns:** `JoinHandle<R>` - A handle to await the result
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  
+  let result = task::spawn_blocking(|| {
+      // Perform CPU-intensive or blocking operation
+      let mut sum = 0;
+      for i in 0..1000000 {
+          sum += i;
+      }
+      sum
+  }).await.unwrap();
+  
+  println!("Computation result: {}", result);
+  ```
+</ParamField>
+
+<Info>
+Use `spawn_blocking` for CPU-intensive work or calling synchronous APIs that would block. This prevents blocking the async runtime threads.
+</Info>
+
+### block_in_place
+
+<ParamField path="block_in_place" type="fn<F, R>(f: F) -> R">
+  Runs a blocking function by converting the current worker thread to a blocking thread.
+  
+  **Only available with the multi-threaded runtime.**
+  
+  **Type Constraints:**
+  - `F: FnOnce() -> R`
+  
+  **Parameters:**
+  - `f`: The blocking function to execute
+  
+  **Returns:** `R` - The result of the function
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  
+  let result = task::block_in_place(|| {
+      // Blocking operation
+      std::thread::sleep(Duration::from_secs(1));
+      "done"
+  });
+  ```
+</ParamField>
+
+## Yielding
+
+### yield_now
+
+<ParamField path="yield_now" type="async fn()">
+  Yields execution back to the Tokio runtime, allowing other tasks to run.
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  
+  async fn cooperative_task() {
+      for i in 0..1000 {
+          // Do some work
+          process_item(i);
+          
+          // Periodically yield to allow other tasks to run
+          if i % 100 == 0 {
+              task::yield_now().await;
+          }
+      }
+  }
+  ```
+</ParamField>
+
+<Tip>
+Use `yield_now()` in long-running loops to maintain fairness and prevent starving other tasks.
+</Tip>
+
+## Local Tasks
+
+### LocalSet
+
+<ParamField path="LocalSet" type="struct">
+  A set of tasks that are executed on the same thread. Allows spawning `!Send` futures.
+  
+  **Example:**
+  ```rust
+  use tokio::task::LocalSet;
+  use std::rc::Rc;
+  
+  #[tokio::main]
+  async fn main() {
+      let local = LocalSet::new();
+      
+      let nonsend_data = Rc::new("Hello");
+      
+      local.run_until(async move {
+          let nonsend_data = nonsend_data.clone();
+          
+          tokio::task::spawn_local(async move {
+              println!("Data: {}", nonsend_data);
+          }).await.unwrap();
+      }).await;
+  }
+  ```
+</ParamField>
+
+### spawn_local
+
+<ParamField path="spawn_local" type="fn<F>(future: F) -> JoinHandle<F::Output>">
+  Spawns a `!Send` future onto the current `LocalSet`.
+  
+  **Type Constraints:**
+  - `F: Future + 'static` (note: NOT required to be `Send`)
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  use std::rc::Rc;
+  
+  // Must be called from within a LocalSet
+  let data = Rc::new(42);
+  let handle = task::spawn_local(async move {
+      println!("Value: {}", data);
+  });
+  ```
+</ParamField>
+
+## JoinSet
+
+<ParamField path="JoinSet" type="struct<T>">
+  A collection of tasks that allows joining multiple tasks efficiently.
+  
+  **Example:**
+  ```rust
+  use tokio::task::JoinSet;
+  
+  #[tokio::main]
+  async fn main() {
+      let mut set = JoinSet::new();
+      
+      for i in 0..10 {
+          set.spawn(async move {
+              // Do work
+              i * 2
+          });
+      }
+      
+      while let Some(res) = set.join_next().await {
+          match res {
+              Ok(value) => println!("Task completed: {}", value),
+              Err(e) => eprintln!("Task failed: {}", e),
+          }
+      }
+  }
+  ```
+</ParamField>
+
+### JoinSet Methods
+
+<ParamField path="spawn" type="fn<F>(&mut self, task: F) -> AbortHandle">
+  Spawns a task onto the `JoinSet`.
+  
+  **Returns:** An `AbortHandle` that can be used to cancel the task
+</ParamField>
+
+<ParamField path="join_next" type="async fn(&mut self) -> Option<Result<T, JoinError>>">
+  Waits for the next task to complete. Returns `None` when all tasks have completed.
+</ParamField>
+
+<ParamField path="abort_all" type="fn(&mut self)">
+  Aborts all tasks in the set.
+</ParamField>
+
+## Task IDs
+
+<ParamField path="id" type="fn() -> Id">
+  Returns the ID of the currently running task.
+  
+  **Panics:** If called from outside a task
+  
+  **Example:**
+  ```rust
+  use tokio::task;
+  
+  tokio::spawn(async {
+      let id = task::id();
+      println!("Task ID: {:?}", id);
+  });
+  ```
+</ParamField>
+
+<ParamField path="try_id" type="fn() -> Option<Id>">
+  Returns the ID of the currently running task, or `None` if called outside a task.
+</ParamField>
+
+## Best Practices
+
+<Steps>
+  <Step title="Spawn tasks liberally">
+    Tasks are cheap. Don't hesitate to spawn many tasks for concurrent operations.
+  </Step>
+  
+  <Step title="Use spawn_blocking for blocking code">
+    Never block the async runtime threads. Use `spawn_blocking` for synchronous APIs.
+  </Step>
+  
+  <Step title="Handle cancellation">
+    Design tasks to clean up resources properly when aborted.
+  </Step>
+  
+  <Step title="Yield in long loops">
+    Use `yield_now()` periodically in CPU-intensive loops to maintain fairness.
+  </Step>
+</Steps>
+
+<Warning>
+Tasks must be `Send` unless spawned with `spawn_local` on a `LocalSet`. Ensure your futures don't capture non-`Send` data like `Rc` or non-`Send` mutex guards.
+</Warning>

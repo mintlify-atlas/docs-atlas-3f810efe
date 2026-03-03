@@ -1,0 +1,481 @@
+---
+title: Blocking Code
+description: How to handle blocking operations and CPU-bound tasks in Tokio without starving the async runtime
+---
+
+Tokio's async runtime relies on tasks yielding at `.await` points. Blocking operations can prevent the runtime from making progress on other tasks. This guide explains how to properly handle blocking code.
+
+## The Problem with Blocking
+
+When you block a thread in an async context, you prevent the executor from running other tasks:
+
+```rust
+// ❌ BAD: This blocks the entire worker thread
+#[tokio::main]
+async fn main() {
+    tokio::spawn(async {
+        // This blocks the worker thread!
+        std::thread::sleep(std::time::Duration::from_secs(10));
+    });
+    
+    // Other tasks can't run on that worker thread
+}
+```
+
+<Warning>
+  Never use `std::thread::sleep` or other blocking operations directly in async code. This starves the runtime.
+</Warning>
+
+## Core vs Blocking Threads
+
+Tokio uses two types of threads:
+
+| Thread Type | Purpose | Default Count | Scheduling |
+|-------------|---------|---------------|------------|
+| **Core threads** | Run async tasks | One per CPU core | Work-stealing |
+| **Blocking threads** | Run blocking operations | Spawned on-demand (max 512) | FIFO queue |
+
+<Note>
+  Core threads run all async code. Blocking threads are spawned as needed for `spawn_blocking` calls.
+</Note>
+
+## Using `spawn_blocking`
+
+`spawn_blocking` runs blocking code on a dedicated thread pool:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let blocking_task = task::spawn_blocking(|| {
+        // This runs on a blocking thread
+        std::thread::sleep(std::time::Duration::from_secs(5));
+        compute_expensive_value()
+    });
+    
+    // Await the result
+    let result = blocking_task.await.unwrap();
+    println!("Result: {}", result);
+}
+
+fn compute_expensive_value() -> i32 {
+    42
+}
+```
+
+### Passing Data
+
+Pass input and receive output:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut input = "Hello, ".to_string();
+    
+    let result = task::spawn_blocking(move || {
+        // We own `input` here
+        input.push_str("world");
+        input // Return ownership
+    }).await?;
+    
+    assert_eq!(result, "Hello, world");
+    Ok(())
+}
+```
+
+### Using Channels
+
+Stream data between async and blocking code:
+
+```rust
+use tokio::task;
+use tokio::sync::mpsc;
+
+#[tokio::main]
+async fn main() {
+    let (tx, mut rx) = mpsc::channel(32);
+    
+    let worker = task::spawn_blocking(move || {
+        for i in 0..10 {
+            // Blocking send
+            tx.blocking_send(i * i).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    });
+    
+    // Async receive
+    while let Some(value) = rx.recv().await {
+        println!("Received: {}", value);
+    }
+    
+    worker.await.unwrap();
+}
+```
+
+<Tip>
+  Use `blocking_send` and `blocking_recv` on channels to communicate between async and blocking contexts.
+</Tip>
+
+## When to Use `spawn_blocking`
+
+### Good Use Cases
+
+#### 1. Synchronous File I/O
+
+```rust
+use tokio::task;
+use std::fs;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let contents = task::spawn_blocking(|| {
+        fs::read_to_string("large_file.txt")
+    }).await.unwrap()?;
+    
+    println!("Read {} bytes", contents.len());
+    Ok(())
+}
+```
+
+<Note>
+  Prefer `tokio::fs` for file operations when possible. Use `spawn_blocking` only when you need to use synchronous file APIs.
+</Note>
+
+#### 2. Database Queries (Synchronous Drivers)
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let result = task::spawn_blocking(move || {
+        // Synchronous database query
+        let conn = establish_connection();
+        query_database(&conn)
+    }).await.unwrap();
+    
+    println!("Query result: {:?}", result);
+}
+
+fn establish_connection() -> Connection {
+    // ...
+}
+
+fn query_database(conn: &Connection) -> Vec<Row> {
+    // ...
+}
+```
+
+#### 3. Calling C Libraries
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let result = task::spawn_blocking(|| {
+        // Call synchronous C library
+        unsafe { some_c_function() }
+    }).await.unwrap();
+}
+
+extern "C" {
+    fn some_c_function() -> i32;
+}
+```
+
+#### 4. Short-Lived CPU-Bound Work
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    let hash = task::spawn_blocking(|| {
+        compute_hash(&large_data())
+    }).await.unwrap();
+    
+    println!("Hash: {}", hash);
+}
+
+fn compute_hash(data: &[u8]) -> String {
+    // CPU-intensive hashing
+    format!("{:x}", md5::compute(data))
+}
+
+fn large_data() -> Vec<u8> {
+    vec![0u8; 1024 * 1024]
+}
+```
+
+### Bad Use Cases
+
+```rust
+// ❌ Long-running background workers
+task::spawn_blocking(|| {
+    loop {
+        // Ties up a blocking thread forever
+        work();
+    }
+});
+
+// ✅ Use a dedicated thread instead
+std::thread::spawn(|| {
+    loop {
+        work();
+    }
+});
+```
+
+## Using `block_in_place`
+
+`block_in_place` temporarily converts the current worker thread to a blocking thread:
+
+```rust
+use tokio::task;
+
+#[tokio::main]
+async fn main() {
+    task::block_in_place(|| {
+        // This blocks the current thread
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    });
+}
+```
+
+<Warning>
+  `block_in_place` **only works with the multi-threaded runtime**. It panics on the current-thread scheduler.
+</Warning>
+
+### Difference from `spawn_blocking`
+
+| Feature | `spawn_blocking` | `block_in_place` |
+|---------|------------------|------------------|
+| Creates new task | ✅ Yes | ❌ No |
+| Changes thread | ✅ Yes | ❌ No (converts current) |
+| Works with current-thread | ✅ Yes | ❌ No |
+| Other concurrent code | ❌ Suspends | ❌ Suspends |
+
+### When to Use `block_in_place`
+
+```rust
+use tokio::task;
+use tokio::runtime::Handle;
+
+#[tokio::main]
+async fn main() {
+    task::block_in_place(|| {
+        // Do blocking work
+        expensive_sync_operation();
+        
+        // Re-enter async context
+        Handle::current().block_on(async {
+            async_operation().await;
+        });
+    });
+}
+
+fn expensive_sync_operation() {
+    std::thread::sleep(std::time::Duration::from_secs(1));
+}
+
+async fn async_operation() {
+    println!("Back in async context");
+}
+```
+
+<Note>
+  Use `block_in_place` when you need to temporarily run blocking code but want to re-enter async context afterwards using `Handle::current().block_on`.
+</Note>
+
+## Handling CPU-Bound Work
+
+For CPU-intensive tasks, consider using a dedicated thread pool:
+
+### Using Rayon
+
+```rust
+use tokio::sync::oneshot;
+
+#[tokio::main]
+async fn main() {
+    let (tx, rx) = oneshot::channel();
+    
+    rayon::spawn(move || {
+        let result = expensive_computation();
+        tx.send(result).unwrap();
+    });
+    
+    let result = rx.await.unwrap();
+    println!("Result: {}", result);
+}
+
+fn expensive_computation() -> i64 {
+    // CPU-intensive work
+    (0..10_000_000).sum()
+}
+```
+
+### Limiting Concurrent CPU Work
+
+Use a semaphore to limit concurrent CPU-bound operations:
+
+```rust
+use tokio::sync::Semaphore;
+use tokio::task;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() {
+    let semaphore = Arc::new(Semaphore::new(4)); // Max 4 concurrent
+    
+    let mut handles = vec![];
+    
+    for i in 0..100 {
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        
+        let handle = task::spawn_blocking(move || {
+            let result = expensive_computation(i);
+            drop(permit); // Release permit
+            result
+        });
+        
+        handles.push(handle);
+    }
+    
+    for handle in handles {
+        handle.await.unwrap();
+    }
+}
+
+fn expensive_computation(n: i32) -> i32 {
+    // CPU-intensive work
+    n * n
+}
+```
+
+## Configuring the Blocking Thread Pool
+
+### Maximum Blocking Threads
+
+```rust
+use tokio::runtime::Builder;
+use std::time::Duration;
+
+fn main() {
+    let runtime = Builder::new_multi_thread()
+        .max_blocking_threads(512) // Default: 512
+        .thread_keep_alive(Duration::from_secs(10)) // Keep idle threads for 10s
+        .build()
+        .unwrap();
+    
+    runtime.block_on(async {
+        // Your async code
+    });
+}
+```
+
+<Warning>
+  The default limit of 512 blocking threads is very high. Most applications don't need to change this.
+</Warning>
+
+### Thread Keep-Alive
+
+Idle blocking threads are kept alive for a duration:
+
+```rust
+use tokio::runtime::Builder;
+use std::time::Duration;
+
+let runtime = Builder::new_multi_thread()
+    .thread_keep_alive(Duration::from_secs(60)) // Keep for 60 seconds
+    .build()
+    .unwrap();
+```
+
+## Cancellation and Shutdown
+
+### Tasks Cannot Be Cancelled
+
+```rust
+use tokio::task;
+use std::time::Duration;
+
+let handle = task::spawn_blocking(|| {
+    std::thread::sleep(Duration::from_secs(10));
+    42
+});
+
+// This has NO EFFECT once the task starts
+handle.abort();
+
+// The task will continue running
+```
+
+<Warning>
+  `spawn_blocking` tasks **cannot be aborted** once they start running. The task will run to completion even after `abort()` is called.
+</Warning>
+
+### Shutdown Behavior
+
+```rust
+use tokio::runtime::Runtime;
+use tokio::task;
+use std::time::Duration;
+
+let rt = Runtime::new().unwrap();
+
+rt.block_on(async {
+    task::spawn_blocking(|| {
+        std::thread::sleep(Duration::from_secs(100));
+    });
+});
+
+// Runtime shutdown waits indefinitely for blocking tasks
+rt.shutdown_timeout(Duration::from_secs(5));
+// After 5 seconds, runtime drops but thread continues
+```
+
+<Note>
+  Use `shutdown_timeout` to avoid waiting indefinitely for blocking tasks during shutdown.
+</Note>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use spawn_blocking" icon="box">
+    For short-lived blocking operations like file I/O or database queries.
+  </Card>
+  
+  <Card title="Use Dedicated Threads" icon="server">
+    For long-running background work or persistent processing loops.
+  </Card>
+  
+  <Card title="Limit Concurrency" icon="gauge">
+    Use semaphores to control the number of concurrent CPU-bound operations.
+  </Card>
+  
+  <Card title="Prefer Async APIs" icon="bolt">
+    Use `tokio::fs`, `tokio::net`, etc. instead of blocking equivalents when available.
+  </Card>
+</CardGroup>
+
+## Blocking Code Checklist
+
+- [ ] Use `tokio::task::spawn_blocking` for blocking I/O
+- [ ] Use dedicated threads (not `spawn_blocking`) for long-running workers
+- [ ] Use `rayon` or a custom thread pool for CPU-bound work
+- [ ] Limit concurrent blocking operations with semaphores
+- [ ] Use `blocking_send`/`blocking_recv` for channel communication
+- [ ] Configure `max_blocking_threads` only if you have specific needs
+- [ ] Use `shutdown_timeout` to avoid hanging on shutdown
+- [ ] Never use `std::thread::sleep` in async code
+- [ ] Prefer `tokio::fs` over `std::fs` when possible
+- [ ] Remember that `block_in_place` only works with multi-threaded runtime
+
+<Tip>
+  When in doubt, use `spawn_blocking`. It's safe, predictable, and works with all runtime configurations.
+</Tip>

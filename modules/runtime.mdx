@@ -1,0 +1,347 @@
+---
+title: Runtime
+description: The Tokio runtime for executing asynchronous tasks
+---
+
+The Tokio runtime provides the core infrastructure for executing asynchronous applications. It bundles an I/O event loop (driver), a scheduler for tasks, and a timer into a single type.
+
+## Overview
+
+Unlike other Rust programs, asynchronous applications require runtime support. The Tokio [`Runtime`](#runtime-struct) provides:
+
+- **I/O event loop**: Drives I/O resources and dispatches I/O events to tasks
+- **Scheduler**: Executes tasks that use I/O resources
+- **Timer**: Schedules work to run after a set period of time
+
+## Creating a Runtime
+
+<CodeGroup>
+```rust Using the macro
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+        
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => return,
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("failed to read: {:?}", e);
+                        return;
+                    }
+                };
+                
+                if let Err(e) = socket.write_all(&buf[0..n]).await {
+                    eprintln!("failed to write: {:?}", e);
+                    return;
+                }
+            }
+        });
+    }
+}
+```
+
+```rust Manual creation
+use tokio::runtime::Runtime;
+use tokio::net::TcpListener;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rt = Runtime::new()?;
+    
+    rt.block_on(async {
+        let listener = TcpListener::bind("127.0.0.1:8080").await?;
+        // ... handle connections
+        Ok(())
+    })
+}
+```
+</CodeGroup>
+
+## Runtime Types
+
+### Multi-Thread Runtime
+
+The multi-thread scheduler executes futures on a thread pool using a work-stealing strategy. By default, it starts a worker thread for each CPU core. This is the ideal configuration for most applications.
+
+```rust
+use tokio::runtime;
+
+let threaded_rt = runtime::Runtime::new()?;
+```
+
+### Current-Thread Runtime
+
+The current-thread scheduler provides a single-threaded future executor. All tasks are created and executed on the current thread.
+
+```rust
+use tokio::runtime;
+
+let rt = runtime::Builder::new_current_thread()
+    .build()?;
+```
+
+## Builder
+
+The `Builder` type allows for custom runtime configuration.
+
+### Functions
+
+<ParamField path="new_multi_thread" type="fn() -> Builder">
+  Creates a new multi-thread runtime builder. Returns a `Builder` configured for the multi-threaded scheduler.
+</ParamField>
+
+<ParamField path="new_current_thread" type="fn() -> Builder">
+  Creates a new current-thread runtime builder. Returns a `Builder` configured for the current-thread scheduler.
+</ParamField>
+
+### Builder Methods
+
+<ParamField path="worker_threads" type="fn(usize) -> Self">
+  Sets the number of worker threads for the runtime.
+  
+  **Parameters:**
+  - `val`: Number of worker threads (only for multi-thread runtime)
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_multi_thread()
+      .worker_threads(4)
+      .build()?;
+  ```
+</ParamField>
+
+<ParamField path="thread_name" type="fn(&str) -> Self">
+  Sets the name for threads spawned by the runtime.
+  
+  **Parameters:**
+  - `name`: Thread name prefix
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_multi_thread()
+      .thread_name("my-pool")
+      .build()?;
+  ```
+</ParamField>
+
+<ParamField path="thread_stack_size" type="fn(usize) -> Self">
+  Sets the stack size for threads spawned by the runtime.
+  
+  **Parameters:**
+  - `size`: Stack size in bytes
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_multi_thread()
+      .thread_stack_size(3 * 1024 * 1024)
+      .build()?;
+  ```
+</ParamField>
+
+<ParamField path="enable_all" type="fn() -> Self">
+  Enables both I/O and time drivers.
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_current_thread()
+      .enable_all()
+      .build()?;
+  ```
+</ParamField>
+
+<ParamField path="enable_io" type="fn() -> Self">
+  Enables the I/O driver. Required for using networking and I/O types.
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_current_thread()
+      .enable_io()
+      .build()?;
+  ```
+</ParamField>
+
+<ParamField path="enable_time" type="fn() -> Self">
+  Enables the time driver. Required for using time-related functionality.
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_current_thread()
+      .enable_time()
+      .build()?;
+  ```
+</ParamField>
+
+<ParamField path="build" type="fn() -> io::Result<Runtime>">
+  Builds the configured runtime. Returns `Result<Runtime, io::Error>`.
+  
+  **Example:**
+  ```rust
+  let runtime = Builder::new_multi_thread()
+      .worker_threads(4)
+      .build()?;
+  ```
+</ParamField>
+
+## Runtime Struct
+
+### Methods
+
+<ParamField path="new" type="fn() -> io::Result<Runtime>">
+  Creates a new multi-thread runtime with default configuration.
+  
+  **Returns:** `Result<Runtime, io::Error>`
+  
+  **Example:**
+  ```rust
+  let rt = Runtime::new()?;
+  ```
+</ParamField>
+
+<ParamField path="block_on" type="fn<F: Future>(&self, future: F) -> F::Output">
+  Runs a future to completion on the runtime, blocking the current thread until done.
+  
+  **Parameters:**
+  - `future`: The future to execute
+  
+  **Returns:** The output of the future
+  
+  **Example:**
+  ```rust
+  let rt = Runtime::new()?;
+  let result = rt.block_on(async {
+      // async code here
+      42
+  });
+  ```
+</ParamField>
+
+<ParamField path="spawn" type="fn<F>(&self, future: F) -> JoinHandle<F::Output>">
+  Spawns a future onto the runtime.
+  
+  **Parameters:**
+  - `future`: The future to spawn
+  
+  **Returns:** A `JoinHandle` for the spawned task
+  
+  **Example:**
+  ```rust
+  rt.spawn(async {
+      println!("Hello from spawned task");
+  });
+  ```
+</ParamField>
+
+<ParamField path="handle" type="fn(&self) -> &Handle">
+  Returns a handle to the runtime. The handle can be cloned and used to spawn tasks from non-async contexts.
+  
+  **Example:**
+  ```rust
+  let handle = rt.handle().clone();
+  std::thread::spawn(move || {
+      handle.spawn(async {
+          // async work
+      });
+  });
+  ```
+</ParamField>
+
+## Handle
+
+A `Handle` to a runtime allows spawning tasks without owning the runtime.
+
+### Methods
+
+<ParamField path="current" type="fn() -> Handle">
+  Returns a handle to the current runtime. Panics if called outside a runtime context.
+  
+  **Example:**
+  ```rust
+  let handle = Handle::current();
+  ```
+</ParamField>
+
+<ParamField path="spawn" type="fn<F>(&self, future: F) -> JoinHandle<F::Output>">
+  Spawns a future onto the runtime associated with this handle.
+  
+  **Example:**
+  ```rust
+  let handle = Handle::current();
+  handle.spawn(async {
+      println!("Spawned from handle");
+  });
+  ```
+</ParamField>
+
+<ParamField path="enter" type="fn(&self) -> EnterGuard">
+  Enters the runtime context. Returns a guard that maintains the runtime context until dropped.
+  
+  **Example:**
+  ```rust
+  let _guard = handle.enter();
+  // Now in runtime context
+  ```
+</ParamField>
+
+## Runtime Behavior
+
+### Fairness Guarantee
+
+Tokio provides fairness guarantees for task scheduling:
+
+<Info>
+If the total number of tasks does not grow without bound, and no task is blocking the thread, then tasks are guaranteed to be scheduled fairly.
+</Info>
+
+### Cooperative Scheduling
+
+Tasks use cooperative multitasking. Each task should periodically yield control back to the scheduler by awaiting. Tasks that run for too long without yielding may starve other tasks.
+
+### Shutdown
+
+When a `Runtime` is dropped, all spawned tasks are cancelled. The runtime waits for all worker threads to terminate.
+
+<Warning>
+Tasks should be designed to handle cancellation gracefully. Use Drop implementations or cancellation tokens to clean up resources.
+</Warning>
+
+## Configuration Options
+
+<Card title="Global Queue Interval" icon="clock">
+  Controls how many ticks before pulling a task from the global queue. Can be tuned for performance.
+</Card>
+
+<Card title="Event Interval" icon="bolt">
+  Controls how many ticks before yielding to the driver for timer and I/O events. Default is 61 ticks.
+</Card>
+
+<Card title="LIFO Slot" icon="layer-group">
+  The multi-threaded runtime uses a LIFO slot optimization for task scheduling. Can be disabled if needed.
+</Card>
+
+## Best Practices
+
+<Steps>
+  <Step title="Choose the right runtime">
+    Use multi-thread runtime for most applications. Use current-thread runtime for single-threaded scenarios or when `!Send` futures are needed.
+  </Step>
+  
+  <Step title="Enable required drivers">
+    Call `enable_all()` or specifically enable I/O and time drivers as needed.
+  </Step>
+  
+  <Step title="Avoid blocking operations">
+    Use `spawn_blocking` for CPU-intensive or blocking operations to avoid blocking the runtime threads.
+  </Step>
+  
+  <Step title="Handle shutdown gracefully">
+    Design tasks to handle cancellation and clean up resources properly.
+  </Step>
+</Steps>

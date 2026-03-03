@@ -1,0 +1,400 @@
+---
+title: "tokio::signal"
+description: "Asynchronous signal handling for Unix and Windows platforms"
+---
+
+The `tokio::signal` module provides asynchronous signal handling for both Unix and Windows platforms.
+
+<Warning>
+  Signal handling is a tricky topic and should be used with great care. Review the platform-specific limitations and caveats before use.
+</Warning>
+
+## Overview
+
+This module allows you to listen for OS signals in an asynchronous manner, integrating signal handling into Tokio's async runtime without blocking.
+
+## Cross-Platform: Ctrl-C
+
+The `ctrl_c` function provides a portable way to receive CTRL+C notifications on both Unix and Windows.
+
+<ParamField path="ctrl_c" type="async fn">
+  Completes when a "ctrl-c" notification is sent to the process.
+  
+  **Returns:** `io::Result<()>`
+  
+  The future completes on the first CTRL+C received after polling begins.
+  
+  ```rust
+  use tokio::signal;
+  
+  #[tokio::main]
+  async fn main() {
+      println!("waiting for ctrl-c");
+      
+      signal::ctrl_c().await.expect("failed to listen for event");
+      
+      println!("received ctrl-c event");
+  }
+  ```
+</ParamField>
+
+### Background Listening
+
+You can spawn a task to listen for CTRL+C in the background:
+
+```rust
+tokio::spawn(async move {
+    tokio::signal::ctrl_c().await.unwrap();
+    // Your shutdown handler here
+    println!("Shutting down gracefully...");
+});
+```
+
+### Graceful Shutdown Example
+
+```rust
+use tokio::signal;
+use tokio::sync::broadcast;
+
+#[tokio::main]
+async fn main() {
+    let (shutdown_tx, _) = broadcast::channel(1);
+    
+    tokio::spawn(async move {
+        signal::ctrl_c().await.expect("failed to listen for ctrl-c");
+        println!("Received ctrl-c, shutting down...");
+        let _ = shutdown_tx.send(());
+    });
+    
+    // Your application logic here
+    // Listen to shutdown_tx.subscribe() to gracefully shut down
+}
+```
+
+## Unix Signals
+
+<Note>
+  Unix signal handling is only available on Unix platforms with the `signal` feature enabled.
+</Note>
+
+The `unix` submodule provides Unix-specific signal handling:
+
+```rust
+use tokio::signal::unix::{signal, SignalKind};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Create a stream of SIGHUP signals
+    let mut stream = signal(SignalKind::hangup())?;
+    
+    // Print whenever a HUP signal is received
+    loop {
+        stream.recv().await;
+        println!("got signal HUP");
+    }
+}
+```
+
+### SignalKind
+
+Represents specific Unix signals:
+
+<ParamField path="SignalKind::alarm" type="const fn">
+  Represents `SIGALRM` - real-time timer expired.
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut alarms = signal(SignalKind::alarm())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::child" type="const fn">
+  Represents `SIGCHLD` - child process status changed.
+  
+  **Default behavior:** Signal is ignored
+  
+  ```rust
+  let mut child_signals = signal(SignalKind::child())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::hangup" type="const fn">
+  Represents `SIGHUP` - terminal disconnected.
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut hangups = signal(SignalKind::hangup())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::interrupt" type="const fn">
+  Represents `SIGINT` - interrupt signal (Ctrl-C).
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut interrupts = signal(SignalKind::interrupt())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::io" type="const fn">
+  Represents `SIGIO` - I/O operations possible on file descriptor.
+  
+  **Default behavior:** Signal is ignored
+  
+  ```rust
+  let mut io_signals = signal(SignalKind::io())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::pipe" type="const fn">
+  Represents `SIGPIPE` - write to pipe with no reader.
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut pipe_signals = signal(SignalKind::pipe())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::quit" type="const fn">
+  Represents `SIGQUIT` - quit signal with core dump.
+  
+  **Default behavior:** Process is terminated with core dump
+  
+  ```rust
+  let mut quits = signal(SignalKind::quit())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::terminate" type="const fn">
+  Represents `SIGTERM` - termination signal.
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut terms = signal(SignalKind::terminate())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::user_defined1" type="const fn">
+  Represents `SIGUSR1` - user-defined signal 1.
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut usr1 = signal(SignalKind::user_defined1())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::user_defined2" type="const fn">
+  Represents `SIGUSR2` - user-defined signal 2.
+  
+  **Default behavior:** Process is terminated
+  
+  ```rust
+  let mut usr2 = signal(SignalKind::user_defined2())?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::window_change" type="const fn">
+  Represents `SIGWINCH` - terminal window size changed.
+  
+  **Default behavior:** Signal is ignored
+  
+  ```rust
+  let mut winch = signal(SignalKind::window_change())?;
+  ```
+</ParamField>
+
+### Custom Signal Numbers
+
+<ParamField path="SignalKind::from_raw" type="const fn">
+  Creates a SignalKind from a raw signal number.
+  
+  **Parameters:**
+  - `signum: c_int` - Raw signal number
+  
+  **Returns:** `SignalKind`
+  
+  Useful for platform-specific signals:
+  
+  ```rust
+  let kind = SignalKind::from_raw(libc::SIGRTMIN);
+  let mut stream = signal(kind)?;
+  ```
+</ParamField>
+
+<ParamField path="SignalKind::as_raw_value" type="const fn">
+  Gets the signal's numeric value.
+  
+  **Returns:** `c_int`
+  
+  ```rust
+  let kind = SignalKind::interrupt();
+  assert_eq!(kind.as_raw_value(), libc::SIGINT);
+  ```
+</ParamField>
+
+## Signal Stream
+
+The `signal` function returns a stream that yields each time the signal is received:
+
+```rust
+use tokio::signal::unix::{signal, SignalKind};
+
+let mut stream = signal(SignalKind::terminate())?;
+
+loop {
+    stream.recv().await;
+    println!("Received SIGTERM");
+}
+```
+
+### Methods
+
+<ParamField path="recv" type="async fn">
+  Waits for the next signal notification.
+  
+  **Returns:** `Option<()>`
+  
+  Returns `None` if the signal stream is closed.
+  
+  ```rust
+  while let Some(()) = stream.recv().await {
+      println!("Signal received");
+  }
+  ```
+</ParamField>
+
+## Multiple Signal Handling
+
+You can listen to multiple signals simultaneously using `tokio::select!`:
+
+```rust
+use tokio::signal::unix::{signal, SignalKind};
+
+let mut sigterm = signal(SignalKind::terminate())?;
+let mut sigint = signal(SignalKind::interrupt())?;
+let mut sighup = signal(SignalKind::hangup())?;
+
+loop {
+    tokio::select! {
+        _ = sigterm.recv() => {
+            println!("Received SIGTERM, shutting down gracefully");
+            break;
+        }
+        _ = sigint.recv() => {
+            println!("Received SIGINT (Ctrl-C)");
+            break;
+        }
+        _ = sighup.recv() => {
+            println!("Received SIGHUP, reloading config");
+            // Reload configuration
+        }
+    }
+}
+```
+
+## Important Caveats
+
+### Signal Handler Replacement
+
+<Warning>
+  When you register a signal listener, Tokio installs an OS signal handler that replaces the default platform behavior **for the entire process duration**.
+</Warning>
+
+For example, on Unix, processes normally terminate when receiving SIGINT (Ctrl-C). Once you create a signal listener:
+
+```rust
+let mut sigint = signal(SignalKind::interrupt())?;
+```
+
+The signal is captured by Tokio instead of terminating the process. **This persists even after dropping the listener.** Your application must explicitly handle the signal and decide whether to exit.
+
+### Proper Signal Handling
+
+```rust
+use tokio::signal::unix::{signal, SignalKind};
+
+let mut sigterm = signal(SignalKind::terminate())?;
+let mut sigint = signal(SignalKind::interrupt())?;
+
+tokio::select! {
+    _ = sigterm.recv() => {
+        println!("SIGTERM received, exiting");
+        std::process::exit(0);
+    }
+    _ = sigint.recv() => {
+        println!("SIGINT received, exiting");
+        std::process::exit(0);
+    }
+}
+```
+
+## Complete Example
+
+Here's a complete example showing graceful shutdown with multiple signals:
+
+```rust
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::broadcast;
+use std::error::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    // Create shutdown channel
+    let (shutdown_tx, mut shutdown_rx) = broadcast::channel(1);
+    
+    // Spawn signal handler
+    tokio::spawn(async move {
+        let mut sigterm = signal(SignalKind::terminate())
+            .expect("failed to listen for SIGTERM");
+        let mut sigint = signal(SignalKind::interrupt())
+            .expect("failed to listen for SIGINT");
+        
+        tokio::select! {
+            _ = sigterm.recv() => println!("SIGTERM received"),
+            _ = sigint.recv() => println!("SIGINT received"),
+        }
+        
+        let _ = shutdown_tx.send(());
+    });
+    
+    // Main application loop
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.recv() => {
+                println!("Shutting down gracefully...");
+                break;
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+                println!("Working...");
+            }
+        }
+    }
+    
+    println!("Cleanup complete");
+    Ok(())
+}
+```
+
+## Platform-Specific Notes
+
+### Unix
+
+- Signal handlers are process-wide and persist for the process lifetime
+- Real-time signals are supported on Linux and illumos
+- Some signals cannot be caught (e.g., SIGKILL, SIGSTOP)
+
+### Windows
+
+Windows has limited signal support. The `ctrl_c` function is the primary cross-platform option.
+
+## See Also
+
+- [tokio::select!](https://docs.rs/tokio/latest/tokio/macro.select.html) - For handling multiple signals
+- [signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html) - Linux signal overview
+- [Process signals](https://docs.rs/tokio/latest/tokio/process/index.html) - For handling child process signals

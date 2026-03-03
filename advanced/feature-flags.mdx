@@ -1,0 +1,343 @@
+---
+title: Feature Flags
+description: Comprehensive guide to Tokio's feature flags and how to configure them for your use case
+---
+
+Tokio uses feature flags to reduce compiled code size and dependencies. By default, Tokio enables **no features**, allowing you to opt into only what you need.
+
+## Quick Start
+
+For application development, use the `full` feature to enable everything:
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["full"] }
+```
+
+For library development, only enable the features you need:
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["rt", "net", "io-util"] }
+```
+
+<Note>
+  The `full` feature does **not** include `test-util` or unstable features like `io-uring` and `taskdump`.
+</Note>
+
+## Core Features
+
+<AccordionGroup>
+  <Accordion title="rt - Basic Runtime">
+    Enables `tokio::spawn`, the current-thread scheduler, and non-scheduler utilities.
+    
+    ```toml
+    tokio = { version = "1.50", features = ["rt"] }
+    ```
+    
+    This is the minimal feature needed to run async tasks. Use this for the single-threaded current-thread scheduler.
+  </Accordion>
+
+  <Accordion title="rt-multi-thread - Multi-threaded Runtime">
+    Enables the multi-threaded, work-stealing scheduler.
+    
+    ```toml
+    tokio = { version = "1.50", features = ["rt-multi-thread"] }
+    ```
+    
+    <Warning>
+      This feature requires the `rt` feature. It adds the heavier multi-threaded scheduler.
+    </Warning>
+    
+    Use this for production applications that need to utilize multiple CPU cores.
+  </Accordion>
+
+  <Accordion title="macros - Convenience Macros">
+    Enables `#[tokio::main]` and `#[tokio::test]` macros.
+    
+    ```toml
+    tokio = { version = "1.50", features = ["macros"] }
+    ```
+    
+    ```rust
+    #[tokio::main]
+    async fn main() {
+        println!("Hello world");
+    }
+    ```
+    
+    This feature depends on the `tokio-macros` crate.
+  </Accordion>
+</AccordionGroup>
+
+## I/O Features
+
+| Feature | Description | Key Types |
+|---------|-------------|----------|
+| **net** | TCP, UDP, and Unix Domain Sockets | `TcpStream`, `UdpSocket`, `UnixStream` |
+| **io-util** | Utility traits and combinators for async I/O | `AsyncReadExt`, `AsyncWriteExt` |
+| **io-std** | Async stdin, stdout, and stderr | `Stdin`, `Stdout`, `Stderr` |
+| **fs** | Async filesystem operations | `File`, `read`, `write`, `read_dir` |
+
+### Network Example
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["rt", "net", "io-util"] }
+```
+
+```rust
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+        
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            socket.read(&mut buf).await.unwrap();
+            socket.write_all(&buf).await.unwrap();
+        });
+    }
+}
+```
+
+<Note>
+  The `AsyncRead` and `AsyncWrite` traits are **always available** and don't require any feature flags.
+</Note>
+
+## Synchronization and Time
+
+| Feature | Description | Key Types |
+|---------|-------------|----------|
+| **sync** | Async synchronization primitives | `Mutex`, `RwLock`, `mpsc`, `oneshot`, `watch`, `broadcast`, `Barrier`, `Semaphore` |
+| **time** | Time-related utilities | `sleep`, `interval`, `timeout`, `Instant`, `Duration` |
+
+### Synchronization Example
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["rt", "sync"] }
+```
+
+```rust
+use tokio::sync::{mpsc, Mutex};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() {
+    let (tx, mut rx) = mpsc::channel(32);
+    let shared = Arc::new(Mutex::new(0));
+    
+    // Send values
+    tx.send(1).await.unwrap();
+    
+    // Receive values
+    if let Some(val) = rx.recv().await {
+        let mut lock = shared.lock().await;
+        *lock += val;
+    }
+}
+```
+
+### Time Example
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["rt", "time"] }
+```
+
+```rust
+use tokio::time::{sleep, Duration, timeout};
+
+#[tokio::main]
+async fn main() {
+    // Sleep for 1 second
+    sleep(Duration::from_secs(1)).await;
+    
+    // Timeout after 5 seconds
+    let result = timeout(Duration::from_secs(5), async {
+        // Some operation
+    }).await;
+}
+```
+
+## System Features
+
+| Feature | Description | Platforms |
+|---------|-------------|----------|
+| **process** | Spawn and manage child processes | Unix, Windows |
+| **signal** | Async signal handling | Unix, Windows |
+
+### Process Example
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["rt", "process"] }
+```
+
+```rust
+use tokio::process::Command;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new("echo")
+        .arg("Hello, world!")
+        .output()
+        .await?;
+    
+    println!("Output: {}", String::from_utf8_lossy(&output.stdout));
+    Ok(())
+}
+```
+
+## Special Features
+
+### test-util
+
+Enables testing utilities for the Tokio runtime.
+
+```toml Cargo.toml
+[dev-dependencies]
+tokio = { version = "1.50", features = ["test-util", "rt", "sync", "time"] }
+```
+
+```rust
+use tokio::time::{sleep, Duration};
+
+#[tokio::test]
+async fn test_with_time() {
+    sleep(Duration::from_millis(100)).await;
+    assert!(true);
+}
+```
+
+<Tip>
+  The `test-util` feature enables `rt`, `sync`, and `time` automatically. It provides `tokio::test` macro and time manipulation utilities.
+</Tip>
+
+### parking_lot
+
+Optimizes internal synchronization primitives using the `parking_lot` crate.
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["full", "parking_lot"] }
+```
+
+<Note>
+  This is a performance optimization. It also allows constructing some primitives in `const` context. MSRV may increase based on `parking_lot` releases.
+</Note>
+
+## Unstable Features
+
+Some features require the `--cfg tokio_unstable` flag and may have breaking API changes.
+
+<Warning>
+  Unstable features may break in 1.x releases. Use with caution in production.
+</Warning>
+
+### Enabling Unstable Features
+
+Add to `.cargo/config.toml`:
+
+```toml .cargo/config.toml
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+**Or** use an environment variable:
+
+```bash
+export RUSTFLAGS="--cfg tokio_unstable"
+cargo build
+```
+
+### Available Unstable Features
+
+| Feature | Description | Platform |
+|---------|-------------|----------|
+| **tracing** | Enables tracing events for debugging | All |
+| **io-uring** | Linux io_uring support for high-performance I/O | Linux only |
+| **taskdump** | Task dump debugging capabilities | Linux (aarch64, x86, x86_64) |
+
+#### io-uring Example
+
+```toml Cargo.toml
+tokio = { version = "1.50", features = ["io-uring"] }
+```
+
+```toml .cargo/config.toml
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+<Warning>
+  `io-uring` is only available on Linux with `--cfg tokio_unstable`. It requires kernel support for io_uring.
+</Warning>
+
+## Complete Feature Table
+
+| Feature | Default | Included in `full` | Unstable | Dependencies |
+|---------|---------|-------------------|----------|--------------|
+| **rt** | ❌ | ✅ | ❌ | - |
+| **rt-multi-thread** | ❌ | ✅ | ❌ | `rt` |
+| **net** | ❌ | ✅ | ❌ | `mio`, `socket2` |
+| **io-util** | ❌ | ✅ | ❌ | `bytes` |
+| **io-std** | ❌ | ✅ | ❌ | - |
+| **fs** | ❌ | ✅ | ❌ | - |
+| **sync** | ❌ | ✅ | ❌ | - |
+| **time** | ❌ | ✅ | ❌ | - |
+| **macros** | ❌ | ✅ | ❌ | `tokio-macros` |
+| **process** | ❌ | ✅ | ❌ | `bytes`, `signal-hook-registry` |
+| **signal** | ❌ | ✅ | ❌ | `signal-hook-registry` |
+| **parking_lot** | ❌ | ✅ | ❌ | `parking_lot` |
+| **test-util** | ❌ | ❌ | ❌ | `rt`, `sync`, `time` |
+| **tracing** | ❌ | ❌ | ✅ | `tracing` |
+| **io-uring** | ❌ | ❌ | ✅ | `io-uring`, `libc`, `slab` |
+| **taskdump** | ❌ | ❌ | ✅ | `backtrace` |
+
+## Choosing Features
+
+### For Applications
+
+Use `full` for convenience during development:
+
+```toml
+tokio = { version = "1.50", features = ["full"] }
+```
+
+### For Libraries
+
+Enable only what you need to minimize dependencies:
+
+```toml
+# For a library that spawns tasks and uses TCP
+tokio = { version = "1.50", features = ["rt", "net"] }
+
+# For a library that needs multi-threading
+tokio = { version = "1.50", features = ["rt-multi-thread", "net"] }
+```
+
+<Tip>
+  Library authors should be conservative with feature flags to avoid forcing unnecessary dependencies on users.
+</Tip>
+
+## Common Feature Combinations
+
+### Basic Async Application
+```toml
+tokio = { version = "1.50", features = ["rt", "macros"] }
+```
+
+### Web Server
+```toml
+tokio = { version = "1.50", features = ["rt-multi-thread", "net", "io-util", "macros"] }
+```
+
+### CLI Tool with File I/O
+```toml
+tokio = { version = "1.50", features = ["rt", "fs", "io-util", "macros"] }
+```
+
+### Background Worker
+```toml
+tokio = { version = "1.50", features = ["rt-multi-thread", "sync", "time", "macros"] }
+```

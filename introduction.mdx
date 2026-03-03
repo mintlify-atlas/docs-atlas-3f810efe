@@ -1,0 +1,155 @@
+---
+title: Introduction
+description: A runtime for writing reliable, asynchronous, and slim applications with Rust
+---
+
+Tokio is an event-driven, non-blocking I/O platform for writing asynchronous applications with the Rust programming language. It provides the runtime components necessary for building fast, reliable, and scalable network applications.
+
+## Why Tokio?
+
+<CardGroup cols={3}>
+  <Card title="Fast" icon="bolt">
+    Tokio's zero-cost abstractions give you bare-metal performance
+  </Card>
+  <Card title="Reliable" icon="shield-check">
+    Leverages Rust's ownership, type system, and concurrency model to reduce bugs and ensure thread safety
+  </Card>
+  <Card title="Scalable" icon="chart-line">
+    Has a minimal footprint, and handles backpressure and cancellation naturally
+  </Card>
+</CardGroup>
+
+## Core components
+
+At a high level, Tokio provides the following major components:
+
+<CardGroup cols={2}>
+  <Card title="Task scheduler" icon="calendar" href="#">
+    A multithreaded, work-stealing based task scheduler for executing asynchronous tasks
+  </Card>
+  <Card title="Async I/O" icon="network-wired" href="#">
+    Asynchronous TCP and UDP sockets backed by the operating system's event queue
+  </Card>
+  <Card title="Timers" icon="clock" href="#">
+    Utilities for tracking time, including timeouts, sleeps, and intervals
+  </Card>
+  <Card title="Synchronization" icon="lock" href="#">
+    Channels and primitives for communicating and sharing data between tasks
+  </Card>
+</CardGroup>
+
+## Key features
+
+### Working with tasks
+
+Asynchronous programs in Rust are based around lightweight, non-blocking units of execution called tasks. Tokio provides tools for working with tasks:
+
+- The `spawn` function for scheduling new tasks on the runtime
+- Functions for running blocking operations in an asynchronous context
+- Synchronization primitives like channels (`oneshot`, `mpsc`, `watch`, `broadcast`)
+- Non-blocking `Mutex` for controlling access to shared data
+
+### Asynchronous I/O
+
+Tokio provides everything you need to perform input and output asynchronously:
+
+- **Networking**: Non-blocking TCP, UDP, and Unix Domain Sockets
+- **Filesystem**: Asynchronous file operations
+- **Process management**: Spawning and managing child processes
+- **Signal handling**: Asynchronous OS signal handling
+
+### Runtime flexibility
+
+The Tokio runtime can be configured to match your application's needs:
+
+- **Single-threaded**: Lightweight runtime for simple applications
+- **Multi-threaded**: Work-stealing scheduler for maximum performance
+- **Customizable**: Fine-grained control over thread pools and resource limits
+
+<Note>
+The easiest way to get started is to enable the `full` feature flag, which provides access to all of Tokio's public APIs.
+</Note>
+
+## Example: TCP echo server
+
+Here's a complete TCP echo server that demonstrates Tokio's core concepts:
+
+```rust
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+
+            // In a loop, read data from the socket and write the data back.
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    // socket closed
+                    Ok(0) => return,
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("failed to read from socket; err = {:?}", e);
+                        return;
+                    }
+                };
+
+                // Write the data back
+                if let Err(e) = socket.write_all(&buf[0..n]).await {
+                    eprintln!("failed to write to socket; err = {:?}", e);
+                    return;
+                }
+            }
+        });
+    }
+}
+```
+
+This example shows several key Tokio features:
+
+- **`#[tokio::main]`**: The macro that sets up the async runtime
+- **Async I/O**: Non-blocking TCP listener and socket operations
+- **Task spawning**: Each connection is handled concurrently with `tokio::spawn`
+- **Error handling**: Robust error propagation with `Result`
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Add Tokio to your Rust project
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first async application
+  </Card>
+</CardGroup>
+
+## Supported platforms
+
+Tokio guarantees support for the following platforms:
+
+- Linux
+- Windows
+- Android (API level 21)
+- macOS
+- iOS
+- FreeBSD
+
+<Tip>
+Tokio requires Rust 1.71 or later. The library follows a rolling MSRV policy of at least 6 months.
+</Tip>
+
+## Related projects
+
+The Tokio ecosystem includes several complementary libraries:
+
+- **axum**: Web application framework focused on ergonomics and modularity
+- **hyper**: Fast HTTP/1.1 and HTTP/2 implementation
+- **tonic**: gRPC over HTTP/2 implementation
+- **tower**: Modular components for building networking clients and servers
+- **tracing**: Application-level tracing and async-aware diagnostics

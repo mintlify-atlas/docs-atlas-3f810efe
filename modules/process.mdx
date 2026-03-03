@@ -1,0 +1,521 @@
+---
+title: "tokio::process"
+description: "Asynchronous process management for spawning and controlling child processes"
+---
+
+The `tokio::process` module provides asynchronous versions of process management functions for spawning and interacting with child processes.
+
+## Overview
+
+This module provides a `Command` type that mirrors `std::process::Command` but with asynchronous methods. The asynchronous process support works through signal handling on Unix and system APIs on Windows.
+
+## Quick Start
+
+Spawn a simple command and wait for it to complete:
+
+```rust
+use tokio::process::Command;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut child = Command::new("echo")
+        .arg("hello")
+        .arg("world")
+        .spawn()
+        .expect("failed to spawn");
+
+    let status = child.wait().await?;
+    println!("Command exited with: {}", status);
+    Ok(())
+}
+```
+
+## Command
+
+The `Command` type is used to configure and spawn child processes.
+
+### Creating Commands
+
+<ParamField path="Command::new" type="fn">
+  Constructs a new Command for launching a program.
+  
+  **Parameters:**
+  - `program: impl AsRef<OsStr>` - Path to the program
+  
+  **Returns:** `Command`
+  
+  ```rust
+  let mut cmd = Command::new("ls");
+  ```
+</ParamField>
+
+### Configuring Commands
+
+<ParamField path="arg" type="fn">
+  Adds an argument to pass to the program.
+  
+  **Parameters:**
+  - `arg: impl AsRef<OsStr>` - Argument to add
+  
+  **Returns:** `&mut Command`
+  
+  ```rust
+  let output = Command::new("ls")
+      .arg("-l")
+      .arg("-a")
+      .output()
+      .await?;
+  ```
+</ParamField>
+
+<ParamField path="args" type="fn">
+  Adds multiple arguments to pass to the program.
+  
+  **Parameters:**
+  - `args: impl IntoIterator<Item = impl AsRef<OsStr>>` - Arguments to add
+  
+  **Returns:** `&mut Command`
+  
+  ```rust
+  let output = Command::new("ls")
+      .args(&["-l", "-a"])
+      .output()
+      .await?;
+  ```
+</ParamField>
+
+<ParamField path="env" type="fn">
+  Inserts or updates an environment variable.
+  
+  **Parameters:**
+  - `key: impl AsRef<OsStr>` - Variable name
+  - `val: impl AsRef<OsStr>` - Variable value
+  
+  **Returns:** `&mut Command`
+  
+  ```rust
+  Command::new("program")
+      .env("PATH", "/custom/path")
+      .spawn()?;
+  ```
+</ParamField>
+
+<ParamField path="envs" type="fn">
+  Adds or updates multiple environment variables.
+  
+  **Parameters:**
+  - `vars: impl IntoIterator<Item = (K, V)>` - Key-value pairs
+  
+  **Returns:** `&mut Command`
+</ParamField>
+
+<ParamField path="env_remove" type="fn">
+  Removes an environment variable.
+  
+  **Parameters:**
+  - `key: impl AsRef<OsStr>` - Variable to remove
+  
+  **Returns:** `&mut Command`
+</ParamField>
+
+<ParamField path="env_clear" type="fn">
+  Clears all environment variables.
+  
+  **Returns:** `&mut Command`
+</ParamField>
+
+<ParamField path="current_dir" type="fn">
+  Sets the working directory for the child process.
+  
+  **Parameters:**
+  - `dir: impl AsRef<Path>` - Working directory
+  
+  **Returns:** `&mut Command`
+  
+  ```rust
+  Command::new("ls")
+      .current_dir("/tmp")
+      .spawn()?;
+  ```
+</ParamField>
+
+### Standard I/O Configuration
+
+<ParamField path="stdin" type="fn">
+  Configures the child process's standard input.
+  
+  **Parameters:**
+  - `cfg: impl Into<Stdio>` - Stdio configuration
+  
+  **Returns:** `&mut Command`
+  
+  **Options:**
+  - `Stdio::inherit()` - Inherit from parent (default)
+  - `Stdio::piped()` - Create a pipe
+  - `Stdio::null()` - Redirect to null
+  
+  ```rust
+  use std::process::Stdio;
+  
+  Command::new("cat")
+      .stdin(Stdio::piped())
+      .spawn()?;
+  ```
+</ParamField>
+
+<ParamField path="stdout" type="fn">
+  Configures the child process's standard output.
+  
+  **Parameters:**
+  - `cfg: impl Into<Stdio>` - Stdio configuration
+  
+  **Returns:** `&mut Command`
+</ParamField>
+
+<ParamField path="stderr" type="fn">
+  Configures the child process's standard error.
+  
+  **Parameters:**
+  - `cfg: impl Into<Stdio>` - Stdio configuration
+  
+  **Returns:** `&mut Command`
+</ParamField>
+
+<ParamField path="kill_on_drop" type="fn">
+  Controls whether the child is killed when the Child handle is dropped.
+  
+  **Parameters:**
+  - `kill_on_drop: bool` - Whether to kill on drop
+  
+  **Returns:** `&mut Command`
+  
+  ```rust
+  Command::new("long_running")
+      .kill_on_drop(true)
+      .spawn()?;
+  ```
+</ParamField>
+
+### Spawning Processes
+
+<ParamField path="spawn" type="fn">
+  Spawns the configured command as a child process.
+  
+  **Returns:** `io::Result<Child>`
+  
+  Returns immediately with a handle to the child process.
+  
+  ```rust
+  let mut child = Command::new("ls").spawn()?;
+  let status = child.wait().await?;
+  ```
+</ParamField>
+
+<ParamField path="status" type="async fn">
+  Spawns the command and waits for it to finish.
+  
+  **Returns:** `impl Future<Output = io::Result<ExitStatus>>`
+  
+  Closes any piped stdin/stdout/stderr before waiting.
+  
+  ```rust
+  let status = Command::new("ls").status().await?;
+  ```
+</ParamField>
+
+<ParamField path="output" type="async fn">
+  Spawns the command and collects all of its output.
+  
+  **Returns:** `impl Future<Output = io::Result<Output>>`
+  
+  Automatically configures stdout and stderr as piped.
+  
+  ```rust
+  let output = Command::new("echo")
+      .arg("hello")
+      .output()
+      .await?;
+  
+  assert!(output.status.success());
+  assert_eq!(output.stdout, b"hello\n");
+  ```
+</ParamField>
+
+## Child Process
+
+The `Child` struct represents a running child process.
+
+### Fields
+
+```rust
+pub struct Child {
+    pub stdin: Option<ChildStdin>,
+    pub stdout: Option<ChildStdout>,
+    pub stderr: Option<ChildStderr>,
+}
+```
+
+### Methods
+
+<ParamField path="id" type="fn">
+  Returns the OS process identifier.
+  
+  **Returns:** `Option<u32>`
+  
+  Returns `None` after the process has been polled to completion.
+  
+  ```rust
+  if let Some(pid) = child.id() {
+      println!("Child PID: {}", pid);
+  }
+  ```
+</ParamField>
+
+<ParamField path="wait" type="async fn">
+  Waits for the child to exit completely.
+  
+  **Returns:** `io::Result<ExitStatus>`
+  
+  Closes stdin before waiting to avoid deadlocks. This method is cancel safe.
+  
+  ```rust
+  let status = child.wait().await?;
+  println!("Exit code: {:?}", status.code());
+  ```
+</ParamField>
+
+<ParamField path="try_wait" type="fn">
+  Attempts to collect the exit status without blocking.
+  
+  **Returns:** `io::Result<Option<ExitStatus>>`
+  
+  Returns `Ok(None)` if the child hasn't exited yet.
+  
+  ```rust
+  match child.try_wait()? {
+      Some(status) => println!("Exited with: {}", status),
+      None => println!("Still running"),
+  }
+  ```
+</ParamField>
+
+<ParamField path="wait_with_output" type="async fn">
+  Waits for the child and collects all output.
+  
+  **Returns:** `io::Result<Output>`
+  
+  ```rust
+  let output = child.wait_with_output().await?;
+  println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
+  ```
+</ParamField>
+
+<ParamField path="kill" type="async fn">
+  Forces the child to exit and waits for it.
+  
+  **Returns:** `io::Result<()>`
+  
+  Sends SIGKILL on Unix platforms.
+  
+  ```rust
+  child.kill().await?;
+  ```
+</ParamField>
+
+<ParamField path="start_kill" type="fn">
+  Forces the child to exit without waiting.
+  
+  **Returns:** `io::Result<()>`
+  
+  This is the async equivalent of `std::process::Child::kill`.
+</ParamField>
+
+## Examples
+
+### Capture Command Output
+
+```rust
+use tokio::process::Command;
+
+let output = Command::new("echo")
+    .arg("hello")
+    .arg("world")
+    .output()
+    .await?;
+
+assert!(output.status.success());
+assert_eq!(output.stdout, b"hello world\n");
+```
+
+### Read Output Line by Line
+
+```rust
+use tokio::io::{BufReader, AsyncBufReadExt};
+use tokio::process::Command;
+use std::process::Stdio;
+
+let mut cmd = Command::new("cat");
+cmd.stdout(Stdio::piped());
+
+let mut child = cmd.spawn().expect("failed to spawn");
+
+let stdout = child.stdout.take().expect("no stdout handle");
+let mut reader = BufReader::new(stdout).lines();
+
+tokio::spawn(async move {
+    let status = child.wait().await.expect("child error");
+    println!("child status: {}", status);
+});
+
+while let Some(line) = reader.next_line().await? {
+    println!("Line: {}", line);
+}
+```
+
+### Write to Child's Stdin
+
+```rust
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+use std::process::Stdio;
+
+let mut child = Command::new("sort")
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .spawn()
+    .expect("failed to spawn");
+
+let mut stdin = child.stdin.take().expect("no stdin handle");
+
+let animals = &["dog", "bird", "frog", "cat", "fish"];
+stdin.write(animals.join("\n").as_bytes()).await?;
+
+// Drop stdin to signal EOF
+drop(stdin);
+
+let output = child.wait_with_output().await?;
+assert_eq!(output.stdout, b"bird\ncat\ndog\nfish\nfrog\n");
+```
+
+### Pipe Between Commands
+
+```rust
+use tokio::{join, process::Command};
+use std::process::Stdio;
+
+let mut echo = Command::new("echo")
+    .arg("hello world!")
+    .stdout(Stdio::piped())
+    .spawn()
+    .expect("failed to spawn echo");
+
+let echo_out = echo.stdout.take().unwrap();
+
+let tr = Command::new("tr")
+    .arg("a-z")
+    .arg("A-Z")
+    .stdin(echo_out.try_into().expect("failed to convert"))
+    .stdout(Stdio::piped())
+    .spawn()
+    .expect("failed to spawn tr");
+
+let (echo_result, tr_output) = join!(echo.wait(), tr.wait_with_output());
+
+assert!(echo_result.unwrap().success());
+let tr_output = tr_output.expect("tr failed");
+assert_eq!(tr_output.stdout, b"HELLO WORLD!\n");
+```
+
+### Kill Child on Signal
+
+```rust
+use tokio::process::Command;
+use tokio::sync::oneshot;
+
+let (send, recv) = oneshot::channel::<()>();
+let mut child = Command::new("sleep").arg("1000").spawn().unwrap();
+
+tokio::spawn(async move { send.send(()) });
+
+tokio::select! {
+    _ = child.wait() => {}
+    _ = recv => child.kill().await.expect("kill failed"),
+}
+```
+
+## Unix-Specific Methods
+
+<Note>
+  These methods are only available on Unix platforms.
+</Note>
+
+<ParamField path="uid" type="fn">
+  Sets the user ID for the child process.
+  
+  **Parameters:**
+  - `id: u32` - User ID
+  
+  **Returns:** `&mut Command`
+  
+  Calls `setuid` in the child process.
+</ParamField>
+
+<ParamField path="gid" type="fn">
+  Sets the group ID for the child process.
+  
+  **Parameters:**
+  - `id: u32` - Group ID
+  
+  **Returns:** `&mut Command`
+</ParamField>
+
+<ParamField path="process_group" type="fn">
+  Sets the process group ID (PGID).
+  
+  **Parameters:**
+  - `pgroup: i32` - Process group ID (0 uses process ID)
+  
+  **Returns:** `&mut Command`
+  
+  ```rust
+  Command::new("sleep")
+      .arg("10")
+      .process_group(0)
+      .spawn()?;
+  ```
+</ParamField>
+
+## Important Notes
+
+### Dropping vs Cancellation
+
+<Warning>
+  Unlike typical async operations, dropping a `Child` does NOT kill the process by default. The process continues running. Use `kill_on_drop(true)` to change this behavior.
+</Warning>
+
+```rust
+// Process continues after drop
+let child = Command::new("sleep").arg("1000").spawn()?;
+drop(child); // Process still running!
+
+// Process killed on drop
+let child = Command::new("sleep")
+    .arg("1000")
+    .kill_on_drop(true)
+    .spawn()?;
+drop(child); // Process is killed
+```
+
+### Zombie Processes on Unix
+
+On Unix, processes must be "reaped" by their parent after exiting. The Tokio runtime will attempt to reap spawned processes on a best-effort basis, but this is not guaranteed.
+
+<Tip>
+  For stricter cleanup guarantees, always call `child.wait().await` before dropping the `Child` handle.
+</Tip>
+
+## See Also
+
+- [std::process::Command](https://doc.rust-lang.org/std/process/struct.Command.html) - Standard library equivalent
+- [AsyncRead](https://docs.rs/tokio/latest/tokio/io/trait.AsyncRead.html) - For reading from child's stdout/stderr
+- [AsyncWrite](https://docs.rs/tokio/latest/tokio/io/trait.AsyncWrite.html) - For writing to child's stdin

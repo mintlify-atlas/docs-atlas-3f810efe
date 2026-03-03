@@ -1,0 +1,217 @@
+---
+title: Runtime
+description: Understanding the Tokio runtime, its components, and configuration options
+---
+
+The Tokio runtime provides the essential infrastructure for executing asynchronous applications. Unlike traditional Rust programs, asynchronous applications require runtime support to function.
+
+## What is the runtime?
+
+The runtime bundles three critical services:
+
+- **I/O event loop** - Drives I/O resources and dispatches events to tasks
+- **Scheduler** - Executes tasks that use I/O resources  
+- **Timer** - Schedules work to run after a set period of time
+
+All of these services are bundled together in the [`Runtime`](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html) type.
+
+## Getting started
+
+Most applications use the `#[tokio::main]` attribute macro, which creates a runtime automatically:
+
+```rust
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => return,
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("failed to read from socket; err = {:?}", e);
+                        return;
+                    }
+                };
+
+                if let Err(e) = socket.write_all(&buf[0..n]).await {
+                    eprintln!("failed to write to socket; err = {:?}", e);
+                    return;
+                }
+            }
+        });
+    }
+}
+```
+
+## Choosing a runtime scheduler
+
+Tokio provides multiple schedulers for different use cases:
+
+### Multi-thread scheduler
+
+The multi-thread scheduler executes futures on a thread pool using a work-stealing strategy. By default, it spawns one worker thread per CPU core.
+
+<Tip>
+This is the ideal configuration for most applications and is selected by default.
+</Tip>
+
+```rust
+use tokio::runtime;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rt = runtime::Runtime::new()?;
+    
+    rt.block_on(async {
+        // Your async code here
+    })
+}
+```
+
+Requires the `rt-multi-thread` feature flag.
+
+### Current-thread scheduler
+
+The current-thread scheduler provides a single-threaded executor. All tasks are created and executed on the current thread.
+
+```rust
+use tokio::runtime;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let rt = runtime::Builder::new_current_thread()
+        .build()?;
+    
+    rt.block_on(async {
+        // Your async code here
+    })
+}
+```
+
+Requires the `rt` feature flag.
+
+<Note>
+Use this scheduler for single-threaded applications or when you need to execute `!Send` futures.
+</Note>
+
+## Runtime configuration
+
+The [`Builder`](https://docs.rs/tokio/latest/tokio/runtime/struct.Builder.html) provides extensive configuration options:
+
+```rust
+use tokio::runtime::Builder;
+
+fn main() {
+    let runtime = Builder::new_multi_thread()
+        .worker_threads(4)
+        .thread_name("my-custom-name")
+        .thread_stack_size(3 * 1024 * 1024)
+        .build()
+        .unwrap();
+
+    // Use runtime
+}
+```
+
+### Enabling resource drivers
+
+When configuring a runtime manually, resource drivers must be enabled explicitly:
+
+```rust
+use tokio::runtime::Builder;
+
+let rt = Builder::new_current_thread()
+    .enable_io()      // Enable networking types
+    .enable_time()    // Enable time types
+    .build()?;
+```
+
+<Tip>
+Use `.enable_all()` as a shorthand to enable both I/O and time drivers.
+</Tip>
+
+## Driving the runtime
+
+A runtime can only execute tasks when it's running:
+
+- **Multi-threaded runtime** - Always running because it spawns worker threads
+- **Current-thread runtime** - Only executes tasks when you call `Runtime::block_on`
+
+<Warning>
+`Handle::block_on` does not drive the runtime. You must have at least one call to `Runtime::block_on` when using the current-thread runtime.
+</Warning>
+
+## Runtime fairness guarantees
+
+Tokio provides fairness guarantees to prevent task starvation:
+
+> If the total number of tasks does not grow without bound, and no task is blocking the thread, then tasks are guaranteed to be scheduled fairly.
+
+The runtime will:
+- Schedule tasks cooperatively at `.await` points
+- Check for I/O and timer events periodically  
+- Prevent any single task from monopolizing the scheduler
+
+### Multi-thread runtime behavior
+
+The multi-thread runtime maintains:
+- One global queue shared across all workers
+- One local queue per worker thread (max 256 tasks)
+- A LIFO slot optimization for recently woken tasks
+
+When a local queue exceeds 256 tasks, half are moved to the global queue. Workers steal tasks from each other when their queues are empty.
+
+### Current-thread runtime behavior  
+
+The current-thread runtime maintains:
+- One global FIFO queue
+- One local FIFO queue
+
+The runtime prefers the local queue but checks the global queue every 31 tasks (configurable via `global_queue_interval`).
+
+## Shutdown behavior
+
+Shutting down the runtime happens by:
+- Dropping the `Runtime` value
+- Calling `shutdown_background()` or `shutdown_timeout()`
+
+<Warning>
+Tasks are not guaranteed to run to completion on shutdown. They will be dropped at the next `.await` point.
+</Warning>
+
+Blocking functions spawned through `spawn_blocking` will run until completion:
+
+```rust
+let rt = Runtime::new()?;
+
+// This will wait for all blocking tasks to complete
+drop(rt);
+
+// Or use a timeout
+rt.shutdown_timeout(Duration::from_secs(10));
+```
+
+## NUMA awareness
+
+<Note>
+The Tokio runtime is not NUMA (Non-Uniform Memory Access) aware. For better performance on NUMA systems, consider running multiple independent runtimes.
+</Note>
+
+## Feature flags
+
+- `rt` - Enables the current-thread scheduler
+- `rt-multi-thread` - Enables the multi-threaded scheduler
+- `macros` - Enables `#[tokio::main]` and `#[tokio::test]` macros
+
+## Related topics
+
+- [Tasks](/concepts/tasks) - Learn about spawning and managing async tasks
+- [Async I/O](/concepts/async-io) - Understand asynchronous I/O operations

@@ -1,0 +1,412 @@
+---
+title: tokio-macros
+description: Procedural macros for Tokio including #[tokio::main] and #[tokio::test]
+---
+
+`tokio-macros` provides Tokio's procedural macros that simplify setting up and testing async code. These macros eliminate boilerplate when creating async entry points and tests.
+
+## Installation
+
+The macros are re-exported by the main `tokio` crate, so you typically don't need to add `tokio-macros` directly:
+
+```toml Cargo.toml
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+<Note>
+The `macros` feature flag is required to use `#[tokio::main]` and `#[tokio::test]`.
+</Note>
+
+## The #[tokio::main] Macro
+
+The `#[tokio::main]` macro transforms an async main function into a synchronous one that runs on the Tokio runtime.
+
+### Basic Usage
+
+```rust
+#[tokio::main]
+async fn main() {
+    println!("Hello world");
+}
+```
+
+This expands to:
+
+```rust
+fn main() {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            println!("Hello world");
+        })
+}
+```
+
+<Tip>
+The macro handles runtime setup automatically, making async code more ergonomic.
+</Tip>
+
+## Runtime Flavors
+
+### Multi-threaded Runtime (Default)
+
+The default flavor uses multiple threads:
+
+```rust
+#[tokio::main]
+async fn main() {
+    // Runs on multi-threaded runtime
+    println!("Hello from multiple threads!");
+}
+```
+
+### Configure Worker Threads
+
+```rust
+#[tokio::main(worker_threads = 4)]
+async fn main() {
+    println!("Running on 4 worker threads");
+}
+```
+
+<Note>
+By default, the number of worker threads equals the number of CPU cores.
+</Note>
+
+### Current Thread Runtime
+
+Use a single-threaded runtime:
+
+```rust
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    println!("Running on a single thread");
+}
+```
+
+This expands to:
+
+```rust
+fn main() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            println!("Running on a single thread");
+        })
+}
+```
+
+### Multi-threaded with Explicit Flavor
+
+```rust
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
+async fn main() {
+    println!("Explicitly multi-threaded with 8 workers");
+}
+```
+
+## Advanced Configuration
+
+### Start with Time Paused
+
+<Info>
+Requires the `test-util` feature flag.
+</Info>
+
+```rust
+#[tokio::main(flavor = "current_thread", start_paused = true)]
+async fn main() {
+    // Time starts paused - useful for testing
+    tokio::time::advance(tokio::time::Duration::from_secs(1)).await;
+}
+```
+
+### Custom Crate Name
+
+If you've renamed the `tokio` crate:
+
+```rust
+use tokio as tokio1;
+
+#[tokio1::main(crate = "tokio1")]
+async fn main() {
+    println!("Hello world");
+}
+```
+
+## The #[tokio::test] Macro
+
+The `#[tokio::test]` macro enables writing async tests without manual runtime setup.
+
+### Basic Test
+
+```rust
+#[tokio::test]
+async fn my_test() {
+    let result = async_operation().await;
+    assert_eq!(result, expected_value);
+}
+```
+
+This expands to:
+
+```rust
+#[test]
+fn my_test() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let result = async_operation().await;
+            assert_eq!(result, expected_value);
+        })
+}
+```
+
+### Multi-threaded Tests
+
+```rust
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_test() {
+    let handle1 = tokio::spawn(async { 1 });
+    let handle2 = tokio::spawn(async { 2 });
+
+    let result1 = handle1.await.unwrap();
+    let result2 = handle2.await.unwrap();
+
+    assert_eq!(result1 + result2, 3);
+}
+```
+
+### Configure Test Workers
+
+```rust
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn parallel_test() {
+    // Test runs with 2 worker threads
+    assert!(true);
+}
+```
+
+### Tests with Paused Time
+
+<Info>
+Requires the `test-util` feature.
+</Info>
+
+```rust
+#[tokio::test(start_paused = true)]
+async fn time_based_test() {
+    let start = tokio::time::Instant::now();
+
+    // Advance time by 1 second instantly
+    tokio::time::advance(tokio::time::Duration::from_secs(1)).await;
+
+    let elapsed = start.elapsed();
+    assert!(elapsed >= tokio::time::Duration::from_secs(1));
+}
+```
+
+<Tip>
+Starting tests with paused time is extremely useful for testing time-dependent code without actual delays.
+</Tip>
+
+## Complete Examples
+
+### Simple HTTP Server
+
+```rust
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    println!("Server running on port 8080");
+
+    loop {
+        let (mut socket, addr) = listener.accept().await?;
+        println!("New connection from: {}", addr);
+
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            loop {
+                let n = socket.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                socket.write_all(&buf[0..n]).await.unwrap();
+            }
+        });
+    }
+}
+```
+
+### Testing Async Functions
+
+```rust
+use tokio::time::{sleep, Duration};
+
+async fn fetch_data() -> Result<String, ()> {
+    sleep(Duration::from_millis(100)).await;
+    Ok("data".to_string())
+}
+
+#[tokio::test]
+async fn test_fetch_data() {
+    let result = fetch_data().await;
+    assert!(result.is_ok());
+    assert_eq!(result.unwrap(), "data");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_fetch_data_no_delay() {
+    // With paused time, no actual delay occurs
+    let result = fetch_data().await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_concurrent_fetches() {
+    let handles: Vec<_> = (0..10)
+        .map(|_| tokio::spawn(fetch_data()))
+        .collect();
+
+    for handle in handles {
+        assert!(handle.await.unwrap().is_ok());
+    }
+}
+```
+
+### Current Thread for Deterministic Tests
+
+```rust
+#[tokio::test(flavor = "current_thread")]
+async fn deterministic_test() {
+    // Single-threaded ensures deterministic execution order
+    let mut counter = 0;
+
+    let task1 = async {
+        counter += 1;
+        counter
+    };
+
+    let task2 = async {
+        counter += 2;
+        counter
+    };
+
+    let result1 = task1.await;
+    let result2 = task2.await;
+
+    assert_eq!(result1, 1);
+    assert_eq!(result2, 3);
+}
+```
+
+## Comparison Table
+
+<ResponseField name="Macro" type="Purpose">
+  | Macro | Purpose | Default Runtime |
+  |-------|---------|----------------|
+  | `#[tokio::main]` | Async main function | Multi-threaded |
+  | `#[tokio::test]` | Async test function | Current-thread |
+</ResponseField>
+
+## Runtime Flavors Comparison
+
+<AccordionGroup>
+  <Accordion title="Multi-threaded Runtime">
+    - **Best for**: Production applications, CPU-bound tasks
+    - **Features**: Work-stealing scheduler, scales with CPU cores
+    - **Trade-off**: More overhead than current-thread
+  </Accordion>
+  
+  <Accordion title="Current-thread Runtime">
+    - **Best for**: Tests, single-threaded apps, WASM
+    - **Features**: Lightweight, deterministic execution
+    - **Trade-off**: Cannot utilize multiple cores
+  </Accordion>
+</AccordionGroup>
+
+## When to Use Each Macro
+
+<CardGroup cols={2}>
+  <Card title="Use #[tokio::main]" icon="play">
+    - Application entry points
+    - Production services
+    - When you need full runtime control
+  </Card>
+  
+  <Card title="Use #[tokio::test]" icon="flask">
+    - Unit tests for async code
+    - Integration tests
+    - When testing time-based logic
+  </Card>
+</CardGroup>
+
+## Common Patterns
+
+### Error Handling
+
+```rust
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let result = risky_operation().await?;
+    println!("Success: {}", result);
+    Ok(())
+}
+```
+
+### Non-main Async Functions
+
+You can use `#[tokio::main]` on non-main functions, but this creates a new runtime each time:
+
+```rust
+#[tokio::main]
+async fn process_data() {
+    // This spawns a new runtime every call
+    // Consider passing a runtime handle instead
+}
+```
+
+<Warning>
+Using `#[tokio::main]` on frequently-called functions is inefficient. Consider using `Runtime::block_on` or passing runtime handles instead.
+</Warning>
+
+## Requirements
+
+<Steps>
+  <Step title="Enable macros feature">
+    Add `macros` to your Tokio features in `Cargo.toml`
+  </Step>
+  <Step title="Choose runtime flavor">
+    Use `rt-multi-thread` for multi-threaded or `rt` for current-thread
+  </Step>
+  <Step title="Add test-util for testing">
+    Include `test-util` feature for `start_paused` and time control
+  </Step>
+</Steps>
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="API Documentation" icon="book" href="https://docs.rs/tokio-macros">
+    Complete API reference on docs.rs
+  </Card>
+  <Card title="Tokio Runtime" icon="gear" href="https://docs.rs/tokio/latest/tokio/runtime/">
+    Learn more about runtime configuration
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/tokio-rs/tokio/tree/master/tokio-macros">
+    View source code
+  </Card>
+  <Card title="Testing Guide" icon="vial" href="https://tokio.rs/tokio/topics/testing">
+    Best practices for testing async code
+  </Card>
+</CardGroup>

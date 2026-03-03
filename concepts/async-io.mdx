@@ -1,0 +1,381 @@
+---
+title: Async I/O
+description: Performing asynchronous I/O operations with Tokio
+---
+
+Tokio provides everything you need to perform input and output asynchronously. Unlike synchronous I/O that blocks the thread, Tokio's async I/O yields to the scheduler when I/O is not ready, allowing other tasks to run.
+
+## Core I/O traits
+
+Tokio defines asynchronous versions of the standard library's I/O traits:
+
+- [`AsyncRead`](https://docs.rs/tokio/latest/tokio/io/trait.AsyncRead.html) - Asynchronous reading
+- [`AsyncWrite`](https://docs.rs/tokio/latest/tokio/io/trait.AsyncWrite.html) - Asynchronous writing  
+- [`AsyncBufRead`](https://docs.rs/tokio/latest/tokio/io/trait.AsyncBufRead.html) - Buffered asynchronous reading
+
+<Note>
+These traits are always available and don't require any feature flags.
+</Note>
+
+### Extension traits
+
+Utility methods are provided through extension traits:
+
+- [`AsyncReadExt`](https://docs.rs/tokio/latest/tokio/io/trait.AsyncReadExt.html) - Utility methods for `AsyncRead`
+- [`AsyncWriteExt`](https://docs.rs/tokio/latest/tokio/io/trait.AsyncWriteExt.html) - Utility methods for `AsyncWrite`
+- [`AsyncBufReadExt`](https://docs.rs/tokio/latest/tokio/io/trait.AsyncBufReadExt.html) - Utility methods for `AsyncBufRead`
+
+These traits are automatically implemented for all types that implement the corresponding base trait.
+
+## Reading files
+
+Reading a file asynchronously is similar to the standard library:
+
+```rust
+use tokio::io::{self, AsyncReadExt};
+use tokio::fs::File;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut f = File::open("foo.txt").await?;
+    let mut buffer = [0; 10];
+
+    // Read up to 10 bytes
+    let n = f.read(&mut buffer).await?;
+
+    println!("The bytes: {:?}", &buffer[..n]);
+    Ok(())
+}
+```
+
+<Tip>
+Notice the `.await` after I/O operations. This is where the task yields to the runtime if I/O is not ready.
+</Tip>
+
+## Writing files
+
+Writing to files works similarly:
+
+```rust
+use tokio::io::{self, AsyncWriteExt};
+use tokio::fs::File;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut file = File::create("output.txt").await?;
+    
+    file.write_all(b"Hello, world!").await?;
+    file.flush().await?;
+    
+    Ok(())
+}
+```
+
+## Buffered I/O
+
+Buffered readers and writers reduce system calls:
+
+### BufReader
+
+```rust
+use tokio::io::{self, BufReader, AsyncBufReadExt};
+use tokio::fs::File;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let f = File::open("foo.txt").await?;
+    let mut reader = BufReader::new(f);
+    let mut buffer = String::new();
+
+    // Read a line into buffer
+    reader.read_line(&mut buffer).await?;
+
+    println!("First line: {}", buffer);
+    Ok(())
+}
+```
+
+### BufWriter
+
+```rust
+use tokio::io::{self, BufWriter, AsyncWriteExt};
+use tokio::fs::File;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let f = File::create("output.txt").await?;
+    let mut writer = BufWriter::new(f);
+
+    // Write a byte to the buffer
+    writer.write(&[42u8]).await?;
+
+    // Flush before dropping
+    writer.flush().await?;
+
+    Ok(())
+}
+```
+
+<Warning>
+Always flush `BufWriter` before it goes out of scope. Buffered data is discarded on drop if not flushed.
+</Warning>
+
+## Network I/O
+
+Tokio provides async versions of TCP, UDP, and Unix domain sockets.
+
+### TCP server
+
+```rust
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+
+            loop {
+                let n = match socket.read(&mut buf).await {
+                    Ok(0) => return,  // Connection closed
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("failed to read: {:?}", e);
+                        return;
+                    }
+                };
+
+                // Echo the data back
+                if let Err(e) = socket.write_all(&buf[0..n]).await {
+                    eprintln!("failed to write: {:?}", e);
+                    return;
+                }
+            }
+        });
+    }
+}
+```
+
+### TCP client
+
+```rust
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = TcpStream::connect("127.0.0.1:8080").await?;
+    
+    // Write some data
+    stream.write_all(b"hello world").await?;
+    
+    // Read the response
+    let mut buffer = [0; 1024];
+    let n = stream.read(&mut buffer).await?;
+    
+    println!("Received: {:?}", &buffer[..n]);
+    Ok(())
+}
+```
+
+### UDP sockets
+
+```rust
+use tokio::net::UdpSocket;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let socket = UdpSocket::bind("127.0.0.1:8080").await?;
+    let mut buf = [0; 1024];
+    
+    loop {
+        let (len, addr) = socket.recv_from(&mut buf).await?;
+        println!("Received {} bytes from {}", len, addr);
+        
+        // Echo back
+        socket.send_to(&buf[..len], addr).await?;
+    }
+}
+```
+
+## Unix domain sockets
+
+On Unix platforms, Tokio supports domain sockets:
+
+```rust
+use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let listener = UnixListener::bind("/tmp/tokio.sock")?;
+    
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+        
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            
+            match socket.read(&mut buf).await {
+                Ok(n) if n > 0 => {
+                    socket.write_all(&buf[..n]).await.ok();
+                }
+                _ => {}
+            }
+        });
+    }
+}
+```
+
+## Standard I/O
+
+Tokio provides async versions of stdin, stdout, and stderr:
+
+```rust
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let stdin = io::stdin();
+    let mut reader = BufReader::new(stdin);
+    
+    stdout.write_all(b"Enter your name: ").await?;
+    stdout.flush().await?;
+    
+    let mut name = String::new();
+    reader.read_line(&mut name).await?;
+    
+    stdout.write_all(format!("Hello, {}!", name.trim()).as_bytes()).await?;
+    
+    Ok(())
+}
+```
+
+<Warning>
+Standard I/O functions must be called from within a Tokio runtime. They will panic if called outside the runtime.
+</Warning>
+
+## Filesystem operations
+
+The [`tokio::fs`](https://docs.rs/tokio/latest/tokio/fs/index.html) module provides async filesystem operations:
+
+```rust
+use tokio::fs;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Read entire file
+    let contents = fs::read_to_string("foo.txt").await?;
+    
+    // Write entire file
+    fs::write("bar.txt", b"Hello, world!").await?;
+    
+    // Copy file
+    fs::copy("foo.txt", "foo_copy.txt").await?;
+    
+    // Remove file
+    fs::remove_file("bar.txt").await?;
+    
+    // Create directory
+    fs::create_dir("my_dir").await?;
+    
+    // Read directory
+    let mut entries = fs::read_dir(".").await?;
+    while let Some(entry) = entries.next_entry().await? {
+        println!("Found: {:?}", entry.path());
+    }
+    
+    Ok(())
+}
+```
+
+## Splitting readers and writers
+
+Many I/O types can be split into separate read and write halves:
+
+```rust
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let stream = TcpStream::connect("127.0.0.1:8080").await?;
+    let (mut reader, mut writer) = stream.into_split();
+    
+    // Spawn a task for reading
+    tokio::spawn(async move {
+        let mut buf = [0; 1024];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => println!("Read {} bytes", n),
+                Err(e) => {
+                    eprintln!("Error: {:?}", e);
+                    break;
+                }
+            }
+        }
+    });
+    
+    // Write from the current task
+    writer.write_all(b"hello").await?;
+    
+    Ok(())
+}
+```
+
+## Copy utilities
+
+Tokio provides utilities for copying data:
+
+```rust
+use tokio::io;
+use tokio::fs::File;
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let mut reader = File::open("input.txt").await?;
+    let mut writer = File::create("output.txt").await?;
+    
+    // Copy all bytes
+    io::copy(&mut reader, &mut writer).await?;
+    
+    Ok(())
+}
+```
+
+## How async I/O works
+
+When you call an async I/O operation:
+
+1. If data is immediately available, the operation completes without yielding
+2. If I/O would block, the task yields to the runtime  
+3. The runtime registers interest in the I/O event with the OS
+4. When the OS signals that I/O is ready, the task is woken
+5. The task is scheduled and the I/O operation completes
+
+This is powered by:
+- **I/O driver** - Backed by the OS event queue (`epoll` on Linux, `kqueue` on macOS/BSD, `IOCP` on Windows)
+- **Waker system** - Notifies the runtime when I/O is ready
+
+<Tip>
+Tokio's I/O is zero-cost: there's no overhead when I/O is immediately ready.
+</Tip>
+
+## Feature flags
+
+- `net` - Enables `TcpStream`, `TcpListener`, `UdpSocket`, and Unix sockets
+- `fs` - Enables filesystem operations
+- `io-util` - Enables I/O utility traits and functions
+- `io-std` - Enables `stdin`, `stdout`, and `stderr`
+
+## Related topics
+
+- [Runtime](/concepts/runtime) - Understanding the I/O driver
+- [Tasks](/concepts/tasks) - Spawning concurrent I/O operations

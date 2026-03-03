@@ -1,0 +1,146 @@
+---
+title: Examples Overview
+description: Learn Tokio through practical examples demonstrating async I/O, networking, and runtime usage
+---
+
+Tokio provides a comprehensive set of examples showcasing various capabilities of the async runtime. These examples range from simple "hello world" programs to more complex real-world applications.
+
+## Getting Started
+
+All examples can be executed from the Tokio repository with:
+
+```bash
+cargo run --example $name
+```
+
+For beginners, we recommend starting with the `hello_world` and `echo-tcp` examples to understand the basics of async networking with Tokio.
+
+## Available Examples
+
+<CardGroup cols={2}>
+  <Card title="Hello World" icon="wave" href="#hello-world">
+    A simple TCP client that connects and writes data
+  </Card>
+  
+  <Card title="Echo TCP Server" icon="server" href="/examples/echo-server">
+    A concurrent TCP echo server demonstrating basic async I/O patterns
+  </Card>
+  
+  <Card title="Chat Server" icon="comments" href="/examples/chat">
+    A multi-client chat server with message broadcasting
+  </Card>
+  
+  <Card title="TCP Client" icon="plug" href="#tcp-client">
+    Connect stdin/stdout to a TCP stream for interactive communication
+  </Card>
+  
+  <Card title="Proxy Server" icon="arrows-left-right" href="#proxy-server">
+    Forward data between clients and backend servers
+  </Card>
+  
+  <Card title="Custom Executor" icon="gears" href="/examples/custom-executor">
+    Integrate Tokio runtime with custom executors
+  </Card>
+</CardGroup>
+
+## Example Categories
+
+### Networking Basics
+
+<AccordionGroup>
+  <Accordion title="Hello World" icon="wave">
+    A minimal TCP client that opens a connection, writes "hello world", and closes.
+    
+    **Use case:** Understanding basic async TCP connections
+    
+    **Key concepts:**
+    - `TcpStream::connect()`
+    - `AsyncWriteExt` trait
+    - `#[tokio::main]` macro
+    
+    ```bash
+    cargo run --example hello_world
+    ```
+  </Accordion>
+  
+  <Accordion title="TCP Client (connect-tcp)" icon="plug">
+    An interactive client that hooks up stdin/stdout to a TCP stream, allowing you to type messages and receive responses.
+    
+    **Use case:** Testing TCP servers interactively
+    
+    **Key concepts:**
+    - Framed I/O with codecs
+    - Stream and Sink traits
+    - Bidirectional communication
+    
+    ```bash
+    cargo run --example connect-tcp 127.0.0.1:8080
+    ```
+  </Accordion>
+  
+  <Accordion title="Proxy Server" icon="arrows-left-right">
+    A TCP proxy that forwards data between clients and a backend server using `copy_bidirectional`.
+    
+    **Use case:** Load balancing, protocol translation, debugging
+    
+    **Key concepts:**
+    - `copy_bidirectional()`
+    - Concurrent connection handling
+    - Forwarding patterns
+    
+    ```bash
+    cargo run --example proxy
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### Server Examples
+
+These examples demonstrate building production-ready servers with Tokio:
+
+- **[Echo TCP Server](/examples/echo-server)** - Learn concurrent connection handling and basic I/O patterns
+- **[Chat Server](/examples/chat)** - Explore message broadcasting, shared state, and the `select!` macro
+- **UDP Examples** - UDP echo server and client implementations
+
+### Advanced Topics
+
+<CardGroup cols={1}>
+  <Card title="Custom Executor" icon="gears" href="/examples/custom-executor">
+    Learn how to integrate Tokio with other executor frameworks using `TokioContext`.
+    
+    **Topics covered:**
+    - Custom runtime integration
+    - Context management
+    - Thread pool coordination
+  </Card>
+</CardGroup>
+
+## Real-World Example
+
+For a larger, production-quality example, check out [mini-redis](https://github.com/tokio-rs/mini-redis), a Redis implementation built with Tokio. It demonstrates:
+
+- Command parsing and execution
+- Connection pooling
+- Error handling patterns
+- Testing async code
+- Production-ready architecture
+
+<Note>
+  The [Tokio tutorial](https://tokio.rs/tokio/tutorial) provides guided walkthroughs of several examples with detailed explanations.
+</Note>
+
+## Contributing Examples
+
+Have an example you'd like to see? Open an issue in the Tokio repository. If you've built something useful, pull requests are welcome!
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Start with Echo Server" icon="rocket" href="/examples/echo-server">
+    Build your first concurrent TCP server
+  </Card>
+  
+  <Card title="Build a Chat App" icon="comments" href="/examples/chat">
+    Learn message broadcasting and state management
+  </Card>
+</CardGroup>

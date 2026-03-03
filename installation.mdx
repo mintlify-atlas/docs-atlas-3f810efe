@@ -1,0 +1,206 @@
+---
+title: Installation
+description: Add Tokio to your Rust project and configure features
+---
+
+Tokio is distributed as a Rust crate and can be easily added to your project using Cargo. The library uses feature flags to allow you to enable only the functionality you need.
+
+## Basic installation
+
+Add Tokio to your `Cargo.toml` dependencies:
+
+```toml Cargo.toml
+[dependencies]
+tokio = { version = "1.50.0", features = ["full"] }
+```
+
+The `full` feature flag enables all of Tokio's public APIs, which is the recommended starting point for applications.
+
+<Note>
+The latest stable version of Tokio is **1.50.0**. Check [crates.io](https://crates.io/crates/tokio) for the most recent version.
+</Note>
+
+## Feature flags
+
+Tokio uses feature flags to reduce compiled code size. You can enable only the features your application needs.
+
+### Common feature combinations
+
+<CodeGroup>
+```toml Full features (applications)
+[dependencies]
+tokio = { version = "1.50.0", features = ["full"] }
+```
+
+```toml Minimal async runtime
+[dependencies]
+tokio = { version = "1.50.0", features = ["rt", "macros"] }
+```
+
+```toml Network application
+[dependencies]
+tokio = { version = "1.50.0", features = ["rt", "net", "macros"] }
+```
+
+```toml Library with minimal dependencies
+[dependencies]
+tokio = { version = "1.50.0", features = ["rt", "sync"] }
+```
+</CodeGroup>
+
+### Available features
+
+Here are the main feature flags available in Tokio:
+
+<AccordionGroup>
+  <Accordion title="Runtime features">
+    - **`rt`**: Enables `tokio::spawn` and the current-thread scheduler
+    - **`rt-multi-thread`**: Enables the multi-threaded, work-stealing scheduler
+    - **`macros`**: Enables `#[tokio::main]` and `#[tokio::test]` macros
+  </Accordion>
+
+  <Accordion title="I/O features">
+    - **`io-util`**: Enables IO-based extension traits
+    - **`io-std`**: Enables `Stdout`, `Stdin`, and `Stderr` types
+    - **`net`**: Enables `tokio::net` types like `TcpStream` and `UdpSocket`
+    - **`fs`**: Enables `tokio::fs` for asynchronous filesystem operations
+  </Accordion>
+
+  <Accordion title="Task features">
+    - **`sync`**: Enables all `tokio::sync` types (channels, mutexes, etc.)
+    - **`time`**: Enables `tokio::time` types for timeouts and intervals
+    - **`process`**: Enables `tokio::process` for spawning child processes
+    - **`signal`**: Enables `tokio::signal` for OS signal handling
+  </Accordion>
+
+  <Accordion title="Other features">
+    - **`full`**: Enables all stable features (recommended for applications)
+    - **`test-util`**: Enables testing utilities for the Tokio runtime
+    - **`parking_lot`**: Uses the `parking_lot` crate's synchronization primitives internally
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+As a library author, enable only the features you need to provide the lightest weight crate for your users. Application developers can use the `full` feature for convenience.
+</Tip>
+
+## Minimum supported Rust version
+
+Tokio requires **Rust 1.71 or later**. The library follows a rolling MSRV policy where the minimum supported Rust version must have been released at least 6 months ago.
+
+```toml Cargo.toml
+[package]
+name = "my-app"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.71"
+
+[dependencies]
+tokio = { version = "1.50.0", features = ["full"] }
+```
+
+<Warning>
+The MSRV may increase as part of a minor release. Check the [CHANGELOG](https://github.com/tokio-rs/tokio/blob/master/tokio/CHANGELOG.md) when upgrading.
+</Warning>
+
+## LTS releases
+
+Tokio offers LTS (long term support) releases that receive backported bugfixes for at least one year:
+
+- **1.43.x** - LTS until March 2026 (MSRV 1.70)
+- **1.47.x** - LTS until September 2026 (MSRV 1.70)
+
+To pin your project to an LTS release, use a tilde version requirement:
+
+```toml Cargo.toml
+[dependencies]
+tokio = { version = "~1.43", features = ["full"] }
+```
+
+This ensures you receive patch updates within the 1.43.x series without automatically upgrading to newer minor versions.
+
+## Unstable features
+
+Some features require the `tokio_unstable` configuration flag. These features may break in 1.x releases.
+
+To enable unstable features, add this to `.cargo/config.toml`:
+
+```toml .cargo/config.toml
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+<Warning>
+The `[build]` section goes in `.cargo/config.toml`, **not** in `Cargo.toml`.
+</Warning>
+
+Alternatively, use an environment variable:
+
+<CodeGroup>
+```bash Unix/Linux/macOS
+export RUSTFLAGS="--cfg tokio_unstable"
+cargo build
+```
+
+```powershell Windows PowerShell
+$Env:RUSTFLAGS="--cfg tokio_unstable"
+cargo build
+```
+</CodeGroup>
+
+Unstable features include:
+
+- **`tracing`**: Enables tracing events
+- **`io-uring`**: Enables io-uring support (Linux only)
+- **`taskdump`**: Enables taskdump functionality (Linux only)
+
+## Verification
+
+Verify your installation by creating a simple hello world program:
+
+<Steps>
+  <Step title="Create a new Rust project">
+    ```bash
+    cargo new tokio-hello
+    cd tokio-hello
+    ```
+  </Step>
+
+  <Step title="Add Tokio to Cargo.toml">
+    ```toml Cargo.toml
+    [dependencies]
+    tokio = { version = "1.50.0", features = ["full"] }
+    ```
+  </Step>
+
+  <Step title="Write an async program">
+    ```rust src/main.rs
+    #[tokio::main]
+    async fn main() {
+        println!("Hello from Tokio!");
+    }
+    ```
+  </Step>
+
+  <Step title="Run the program">
+    ```bash
+    cargo run
+    ```
+    
+    You should see:
+    ```
+    Hello from Tokio!
+    ```
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first async application with Tokio
+  </Card>
+  <Card title="API documentation" icon="book" href="https://docs.rs/tokio/latest/tokio">
+    Explore the complete API reference
+  </Card>
+</CardGroup>

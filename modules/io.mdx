@@ -1,0 +1,523 @@
+---
+title: I/O
+description: Traits and utilities for asynchronous I/O operations
+---
+
+Traits, helpers, and type definitions for asynchronous I/O functionality in Tokio.
+
+## Overview
+
+This module is the asynchronous version of `std::io`. It defines two core traits:
+
+- **`AsyncRead`**: Asynchronous reading of bytes from a source
+- **`AsyncWrite`**: Asynchronous writing of bytes to a destination
+
+<Info>
+Unlike standard library traits, Tokio's I/O traits yield to the scheduler when I/O is not ready, allowing other tasks to run.
+</Info>
+
+## Core Traits
+
+### AsyncRead
+
+<ParamField path="AsyncRead" type="trait">
+  Reads bytes asynchronously from a source.
+  
+  **Required Method:**
+  ```rust
+  fn poll_read(
+      self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &mut ReadBuf<'_>,
+  ) -> Poll<io::Result<()>>
+  ```
+  
+  **Example Implementation:**
+  ```rust
+  use tokio::io::{AsyncRead, ReadBuf};
+  use std::pin::Pin;
+  use std::task::{Context, Poll};
+  
+  struct MyReader {
+      // ... fields
+  }
+  
+  impl AsyncRead for MyReader {
+      fn poll_read(
+          self: Pin<&mut Self>,
+          cx: &mut Context<'_>,
+          buf: &mut ReadBuf<'_>,
+      ) -> Poll<io::Result<()>> {
+          // Implementation
+          Poll::Ready(Ok(()))
+      }
+  }
+  ```
+</ParamField>
+
+### AsyncWrite
+
+<ParamField path="AsyncWrite" type="trait">
+  Writes bytes asynchronously to a destination.
+  
+  **Required Methods:**
+  ```rust
+  fn poll_write(
+      self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &[u8],
+  ) -> Poll<io::Result<usize>>
+  
+  fn poll_flush(
+      self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+  ) -> Poll<io::Result<()>>
+  
+  fn poll_shutdown(
+      self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+  ) -> Poll<io::Result<()>>
+  ```
+</ParamField>
+
+## Extension Traits
+
+Most users interact with I/O through extension traits that provide convenient async methods.
+
+### AsyncReadExt
+
+Provides utility methods for types implementing `AsyncRead`.
+
+<ParamField path="read" type="async fn(&mut self, buf: &mut [u8]) -> io::Result<usize>">
+  Reads some bytes from the source into the buffer.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io::AsyncReadExt;
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let mut file = File::open("foo.txt").await?;
+      let mut buffer = [0; 10];
+      
+      let n = file.read(&mut buffer).await?;
+      println!("Read {} bytes: {:?}", n, &buffer[..n]);
+      Ok(())
+  }
+  ```
+</ParamField>
+
+<ParamField path="read_exact" type="async fn(&mut self, buf: &mut [u8]) -> io::Result<()>">
+  Reads exactly the number of bytes required to fill the buffer.
+  
+  **Example:**
+  ```rust
+  use tokio::io::AsyncReadExt;
+  
+  let mut buffer = [0; 10];
+  reader.read_exact(&mut buffer).await?;
+  // buffer is now completely filled
+  ```
+</ParamField>
+
+<ParamField path="read_to_end" type="async fn(&mut self, buf: &mut Vec<u8>) -> io::Result<usize>">
+  Reads all bytes until EOF, appending them to the vector.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io::AsyncReadExt;
+  
+  let mut file = File::open("foo.txt").await?;
+  let mut contents = Vec::new();
+  file.read_to_end(&mut contents).await?;
+  ```
+</ParamField>
+
+<ParamField path="read_to_string" type="async fn(&mut self, buf: &mut String) -> io::Result<usize>">
+  Reads all bytes until EOF, appending them to the string.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io::AsyncReadExt;
+  
+  let mut file = File::open("foo.txt").await?;
+  let mut contents = String::new();
+  file.read_to_string(&mut contents).await?;
+  println!("File contents: {}", contents);
+  ```
+</ParamField>
+
+### AsyncWriteExt
+
+Provides utility methods for types implementing `AsyncWrite`.
+
+<ParamField path="write" type="async fn(&mut self, buf: &[u8]) -> io::Result<usize>">
+  Writes a buffer into this writer, returning how many bytes were written.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io::AsyncWriteExt;
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let mut file = File::create("foo.txt").await?;
+      let n = file.write(b"hello world").await?;
+      println!("Wrote {} bytes", n);
+      Ok(())
+  }
+  ```
+</ParamField>
+
+<ParamField path="write_all" type="async fn(&mut self, buf: &[u8]) -> io::Result<()>">
+  Writes the entire buffer to this writer.
+  
+  **Example:**
+  ```rust
+  use tokio::io::AsyncWriteExt;
+  
+  writer.write_all(b"hello world").await?;
+  // All bytes have been written
+  ```
+</ParamField>
+
+<ParamField path="flush" type="async fn(&mut self) -> io::Result<()>">
+  Flushes this writer, ensuring all buffered data reaches the destination.
+  
+  **Example:**
+  ```rust
+  use tokio::io::AsyncWriteExt;
+  
+  writer.write_all(b"data").await?;
+  writer.flush().await?;
+  ```
+</ParamField>
+
+<ParamField path="shutdown" type="async fn(&mut self) -> io::Result<()>">
+  Shuts down the writer, flushing any buffered data.
+  
+  **Example:**
+  ```rust
+  use tokio::io::AsyncWriteExt;
+  
+  writer.write_all(b"goodbye").await?;
+  writer.shutdown().await?;
+  ```
+</ParamField>
+
+## Buffered I/O
+
+### BufReader
+
+<ParamField path="BufReader::new" type="fn<R: AsyncRead>(inner: R) -> BufReader<R>">
+  Creates a new buffered reader.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io::{BufReader, AsyncBufReadExt};
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let file = File::open("foo.txt").await?;
+      let mut reader = BufReader::new(file);
+      let mut line = String::new();
+      
+      reader.read_line(&mut line).await?;
+      println!("First line: {}", line);
+      Ok(())
+  }
+  ```
+</ParamField>
+
+### BufWriter
+
+<ParamField path="BufWriter::new" type="fn<W: AsyncWrite>(inner: W) -> BufWriter<W>">
+  Creates a new buffered writer.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io::{BufWriter, AsyncWriteExt};
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let file = File::create("foo.txt").await?;
+      let mut writer = BufWriter::new(file);
+      
+      writer.write_all(b"hello").await?;
+      writer.flush().await?; // Don't forget to flush!
+      Ok(())
+  }
+  ```
+</ParamField>
+
+<Warning>
+`BufWriter` buffers writes. You **must** call `flush()` or `shutdown()` to ensure data is written before the writer is dropped.
+</Warning>
+
+### AsyncBufReadExt
+
+<ParamField path="read_line" type="async fn(&mut self, buf: &mut String) -> io::Result<usize>">
+  Reads a line into the string, including the newline character.
+  
+  **Example:**
+  ```rust
+  use tokio::io::{BufReader, AsyncBufReadExt};
+  use tokio::fs::File;
+  
+  let file = File::open("foo.txt").await?;
+  let mut reader = BufReader::new(file);
+  let mut line = String::new();
+  
+  while reader.read_line(&mut line).await? > 0 {
+      println!("Line: {}", line);
+      line.clear();
+  }
+  ```
+</ParamField>
+
+<ParamField path="lines" type="fn(self) -> Lines<Self>">
+  Returns a stream of lines from the reader.
+  
+  **Example:**
+  ```rust
+  use tokio::io::{BufReader, AsyncBufReadExt};
+  use tokio::fs::File;
+  
+  let file = File::open("foo.txt").await?;
+  let reader = BufReader::new(file);
+  let mut lines = reader.lines();
+  
+  while let Some(line) = lines.next_line().await? {
+      println!("Line: {}", line);
+  }
+  ```
+</ParamField>
+
+## Utility Functions
+
+### copy
+
+<ParamField path="copy" type="async fn<R, W>(reader: &mut R, writer: &mut W) -> io::Result<u64>">
+  Copies all bytes from reader to writer.
+  
+  **Example:**
+  ```rust
+  use tokio::fs::File;
+  use tokio::io;
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let mut source = File::open("source.txt").await?;
+      let mut dest = File::create("dest.txt").await?;
+      
+      let bytes_copied = io::copy(&mut source, &mut dest).await?;
+      println!("Copied {} bytes", bytes_copied);
+      Ok(())
+  }
+  ```
+</ParamField>
+
+### split
+
+<ParamField path="split" type="fn<T: AsyncRead + AsyncWrite>(stream: T) -> (ReadHalf<T>, WriteHalf<T>)">
+  Splits a stream into a read half and write half.
+  
+  **Example:**
+  ```rust
+  use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+  use tokio::net::TcpStream;
+  
+  let stream = TcpStream::connect("127.0.0.1:8080").await?;
+  let (mut reader, mut writer) = io::split(stream);
+  
+  tokio::spawn(async move {
+      writer.write_all(b"hello").await.unwrap();
+  });
+  
+  let mut buf = [0; 1024];
+  let n = reader.read(&mut buf).await?;
+  ```
+</ParamField>
+
+### duplex
+
+<ParamField path="duplex" type="fn(max_buf_size: usize) -> (DuplexStream, DuplexStream)">
+  Creates an in-memory duplex stream. Data written to one half can be read from the other.
+  
+  **Example:**
+  ```rust
+  use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let (mut client, mut server) = io::duplex(64);
+      
+      client.write_all(b"ping").await?;
+      
+      let mut buf = [0; 4];
+      server.read_exact(&mut buf).await?;
+      assert_eq!(&buf, b"ping");
+      Ok(())
+  }
+  ```
+</ParamField>
+
+## Standard I/O
+
+<ParamField path="stdin" type="fn() -> Stdin">
+  Returns a handle to standard input.
+  
+  **Example:**
+  ```rust
+  use tokio::io::{self, AsyncBufReadExt, BufReader};
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let mut stdin = BufReader::new(io::stdin());
+      let mut line = String::new();
+      
+      println!("Enter a line:");
+      stdin.read_line(&mut line).await?;
+      println!("You entered: {}", line);
+      Ok(())
+  }
+  ```
+</ParamField>
+
+<ParamField path="stdout" type="fn() -> Stdout">
+  Returns a handle to standard output.
+  
+  **Example:**
+  ```rust
+  use tokio::io::{self, AsyncWriteExt};
+  
+  #[tokio::main]
+  async fn main() -> io::Result<()> {
+      let mut stdout = io::stdout();
+      stdout.write_all(b"Hello, world!\n").await?;
+      Ok(())
+  }
+  ```
+</ParamField>
+
+<ParamField path="stderr" type="fn() -> Stderr">
+  Returns a handle to standard error.
+</ParamField>
+
+## Practical Examples
+
+### Reading a File Line by Line
+
+```rust
+use tokio::fs::File;
+use tokio::io::{self, AsyncBufReadExt, BufReader};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let file = File::open("input.txt").await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    
+    while let Some(line) = lines.next_line().await? {
+        println!("Line: {}", line);
+    }
+    
+    Ok(())
+}
+```
+
+### Echo Server
+
+```rust
+use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    
+    loop {
+        let (mut socket, _) = listener.accept().await?;
+        
+        tokio::spawn(async move {
+            let mut buf = [0; 1024];
+            
+            loop {
+                match socket.read(&mut buf).await {
+                    Ok(0) => return, // Connection closed
+                    Ok(n) => {
+                        if socket.write_all(&buf[..n]).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+    }
+}
+```
+
+### Copying with Progress
+
+```rust
+use tokio::fs::File;
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+
+async fn copy_with_progress(
+    src: &str,
+    dst: &str,
+) -> io::Result<u64> {
+    let mut source = File::open(src).await?;
+    let mut dest = File::create(dst).await?;
+    let mut buf = vec![0; 8192];
+    let mut total = 0u64;
+    
+    loop {
+        let n = source.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        
+        dest.write_all(&buf[..n]).await?;
+        total += n as u64;
+        println!("Copied {} bytes", total);
+    }
+    
+    dest.flush().await?;
+    Ok(total)
+}
+```
+
+## Best Practices
+
+<Steps>
+  <Step title="Use buffered I/O">
+    Wrap readers and writers with `BufReader` and `BufWriter` for better performance.
+  </Step>
+  
+  <Step title="Always flush buffers">
+    Call `flush()` or `shutdown()` on buffered writers before dropping them.
+  </Step>
+  
+  <Step title="Handle EOF properly">
+    Check for 0-byte reads which indicate end of stream.
+  </Step>
+  
+  <Step title="Use extension traits">
+    Import `AsyncReadExt` and `AsyncWriteExt` for convenient methods.
+  </Step>
+</Steps>
+
+<Tip>
+For network protocols, consider using `BufReader` to efficiently read data in patterns like line-by-line or length-prefixed messages.
+</Tip>
+
+<Warning>
+Don't perform blocking I/O operations (like `std::fs` or blocking network calls) from async contexts. Use `tokio::fs` and `tokio::net` instead.
+</Warning>

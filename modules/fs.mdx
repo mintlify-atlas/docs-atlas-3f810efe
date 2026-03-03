@@ -1,0 +1,513 @@
+---
+title: "tokio::fs"
+description: "Asynchronous file system operations for non-blocking file I/O"
+---
+
+The `tokio::fs` module provides asynchronous file system utilities for reading and writing files without blocking the async runtime.
+
+## Overview
+
+Tokio's file system operations run on a blocking thread pool using `spawn_blocking` behind the scenes, since most operating systems don't provide true async file system APIs. This allows file operations to avoid blocking the async runtime's executor threads.
+
+<Warning>
+  Only use `tokio::fs` for regular files. For special files like named pipes, use dedicated types such as `tokio::net::unix::pipe` or `AsyncFd`.
+</Warning>
+
+## Quick Start
+
+The simplest way to work with files is using the utility functions:
+
+```rust
+use tokio::fs;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // Read entire file
+    let contents = fs::read_to_string("my_file.txt").await?;
+    println!("File has {} lines", contents.lines().count());
+    
+    // Write entire file
+    fs::write("output.txt", b"Hello, world!").await?;
+    
+    Ok(())
+}
+```
+
+## File Operations
+
+### Reading Files
+
+<ParamField path="read" type="async fn">
+  Reads the entire contents of a file into a bytes vector.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to the file
+  
+  **Returns:** `io::Result<Vec<u8>>`
+  
+  ```rust
+  let contents = tokio::fs::read("file.bin").await?;
+  ```
+</ParamField>
+
+<ParamField path="read_to_string" type="async fn">
+  Reads the entire contents of a file into a string.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to the file
+  
+  **Returns:** `io::Result<String>`
+  
+  ```rust
+  let text = tokio::fs::read_to_string("file.txt").await?;
+  ```
+</ParamField>
+
+### Writing Files
+
+<ParamField path="write" type="async fn">
+  Writes bytes to a file, creating or truncating it.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to the file
+  - `contents: impl AsRef<[u8]>` - Contents to write
+  
+  **Returns:** `io::Result<()>`
+  
+  Overwrites the file if it exists, creates it if it doesn't.
+  
+  ```rust
+  tokio::fs::write("file.txt", b"Hello, world!").await?;
+  ```
+</ParamField>
+
+### File Type
+
+For more control, use the `File` type:
+
+```rust
+use tokio::fs::File;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let mut file = File::open("my_file.txt").await?;
+    
+    let mut contents = vec![0; 4096];
+    let n = file.read(&mut contents).await?;
+    
+    println!("Read {} bytes", n);
+    Ok(())
+}
+```
+
+<ParamField path="File::open" type="async fn">
+  Opens a file in read-only mode.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to the file
+  
+  **Returns:** `io::Result<File>`
+  
+  ```rust
+  let file = File::open("input.txt").await?;
+  ```
+</ParamField>
+
+<ParamField path="File::create" type="async fn">
+  Creates a new file or truncates an existing one.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to the file
+  
+  **Returns:** `io::Result<File>`
+  
+  ```rust
+  let file = File::create("output.txt").await?;
+  ```
+</ParamField>
+
+<ParamField path="File::options" type="fn">
+  Returns a new OpenOptions object for fine-grained control.
+  
+  **Returns:** `OpenOptions`
+  
+  ```rust
+  let file = File::options()
+      .read(true)
+      .write(true)
+      .create(true)
+      .open("file.txt")
+      .await?;
+  ```
+</ParamField>
+
+## Writing to Files
+
+<Warning>
+  Always call `flush()` when writing to a Tokio `File`. Unlike `std::fs::File`, writes return before completion. The `flush()` method waits for the write to finish.
+</Warning>
+
+```rust
+use tokio::fs::File;
+use tokio::io::AsyncWriteExt;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let mut file = File::create("output.txt").await?;
+    
+    file.write_all(b"First line.\n").await?;
+    file.write_all(b"Second line.\n").await?;
+    file.write_all(b"Third line.\n").await?;
+    
+    // Critical: flush to ensure data is written!
+    file.flush().await?;
+    
+    Ok(())
+}
+```
+
+## Directory Operations
+
+### Creating Directories
+
+<ParamField path="create_dir" type="async fn">
+  Creates a new directory.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to create
+  
+  **Returns:** `io::Result<()>`
+  
+  Returns an error if the directory already exists.
+  
+  ```rust
+  tokio::fs::create_dir("my_dir").await?;
+  ```
+</ParamField>
+
+<ParamField path="create_dir_all" type="async fn">
+  Recursively creates a directory and all parent directories.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to create
+  
+  **Returns:** `io::Result<()>`
+  
+  ```rust
+  tokio::fs::create_dir_all("path/to/nested/dir").await?;
+  ```
+</ParamField>
+
+### Reading Directories
+
+<ParamField path="read_dir" type="async fn">
+  Returns a stream over entries in a directory.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Directory path
+  
+  **Returns:** `io::Result<ReadDir>`
+  
+  ```rust
+  let mut entries = tokio::fs::read_dir(".").await?;
+  
+  while let Some(entry) = entries.next_entry().await? {
+      println!("Found: {:?}", entry.path());
+  }
+  ```
+</ParamField>
+
+### Removing Directories
+
+<ParamField path="remove_dir" type="async fn">
+  Removes an empty directory.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Directory to remove
+  
+  **Returns:** `io::Result<()>`
+  
+  ```rust
+  tokio::fs::remove_dir("empty_dir").await?;
+  ```
+</ParamField>
+
+<ParamField path="remove_dir_all" type="async fn">
+  Removes a directory and all its contents recursively.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Directory to remove
+  
+  **Returns:** `io::Result<()>`
+  
+  ```rust
+  tokio::fs::remove_dir_all("dir_with_contents").await?;
+  ```
+</ParamField>
+
+## File Metadata
+
+<ParamField path="metadata" type="async fn">
+  Returns metadata about a file or directory.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - File path
+  
+  **Returns:** `io::Result<Metadata>`
+  
+  ```rust
+  let metadata = tokio::fs::metadata("file.txt").await?;
+  println!("File size: {} bytes", metadata.len());
+  println!("Is directory: {}", metadata.is_dir());
+  ```
+</ParamField>
+
+<ParamField path="symlink_metadata" type="async fn">
+  Returns metadata without following symbolic links.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - File path
+  
+  **Returns:** `io::Result<Metadata>`
+</ParamField>
+
+## File System Operations
+
+<ParamField path="rename" type="async fn">
+  Renames or moves a file or directory.
+  
+  **Parameters:**
+  - `from: impl AsRef<Path>` - Source path
+  - `to: impl AsRef<Path>` - Destination path
+  
+  **Returns:** `io::Result<()>`
+  
+  ```rust
+  tokio::fs::rename("old_name.txt", "new_name.txt").await?;
+  ```
+</ParamField>
+
+<ParamField path="copy" type="async fn">
+  Copies a file to a new location.
+  
+  **Parameters:**
+  - `from: impl AsRef<Path>` - Source file
+  - `to: impl AsRef<Path>` - Destination path
+  
+  **Returns:** `io::Result<u64>` - Number of bytes copied
+  
+  ```rust
+  let bytes = tokio::fs::copy("source.txt", "dest.txt").await?;
+  println!("Copied {} bytes", bytes);
+  ```
+</ParamField>
+
+<ParamField path="remove_file" type="async fn">
+  Removes a file from the filesystem.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - File to remove
+  
+  **Returns:** `io::Result<()>`
+  
+  ```rust
+  tokio::fs::remove_file("unwanted.txt").await?;
+  ```
+</ParamField>
+
+<ParamField path="hard_link" type="async fn">
+  Creates a hard link to a file.
+  
+  **Parameters:**
+  - `src: impl AsRef<Path>` - Existing file
+  - `dst: impl AsRef<Path>` - New link path
+  
+  **Returns:** `io::Result<()>`
+</ParamField>
+
+<ParamField path="canonicalize" type="async fn">
+  Returns the canonical, absolute form of a path.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to canonicalize
+  
+  **Returns:** `io::Result<PathBuf>`
+  
+  ```rust
+  let path = tokio::fs::canonicalize("../file.txt").await?;
+  ```
+</ParamField>
+
+<ParamField path="try_exists" type="async fn">
+  Checks whether a path exists.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Path to check
+  
+  **Returns:** `io::Result<bool>`
+  
+  ```rust
+  if tokio::fs::try_exists("config.toml").await? {
+      println!("Config file found");
+  }
+  ```
+</ParamField>
+
+## Symbolic Links
+
+<ParamField path="read_link" type="async fn">
+  Reads the target of a symbolic link.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - Symlink path
+  
+  **Returns:** `io::Result<PathBuf>`
+</ParamField>
+
+### Platform-Specific
+
+**Unix:**
+- `symlink(src, dst)` - Creates a symbolic link
+
+**Windows:**
+- `symlink_file(src, dst)` - Creates a file symlink
+- `symlink_dir(src, dst)` - Creates a directory symlink
+
+## Permissions
+
+<ParamField path="set_permissions" type="async fn">
+  Changes the permissions of a file or directory.
+  
+  **Parameters:**
+  - `path: impl AsRef<Path>` - File path
+  - `perm: Permissions` - New permissions
+  
+  **Returns:** `io::Result<()>`
+  
+  ```rust
+  use std::fs::Permissions;
+  use std::os::unix::fs::PermissionsExt;
+  
+  let perms = Permissions::from_mode(0o644);
+  tokio::fs::set_permissions("file.txt", perms).await?;
+  ```
+</ParamField>
+
+## Performance Tuning
+
+Tokio's file operations use `spawn_blocking`, which has performance implications. Batch operations for better performance:
+
+### Good: Single spawn_blocking call
+
+```rust
+let contents = tokio::fs::read_to_string("large_file.txt").await?;
+```
+
+### Better: Use BufWriter for multiple writes
+
+```rust
+use tokio::fs::File;
+use tokio::io::{AsyncWriteExt, BufWriter};
+
+let file = BufWriter::new(File::create("output.txt").await?);
+file.write_all(b"Line 1\n").await?;
+file.write_all(b"Line 2\n").await?;
+file.write_all(b"Line 3\n").await?;
+
+// Single spawn_blocking on flush
+file.flush().await?;
+```
+
+### Best: Manual spawn_blocking for complex operations
+
+```rust
+use std::fs::File;
+use std::io::{self, Write};
+use tokio::task::spawn_blocking;
+
+spawn_blocking(move || {
+    let mut file = File::create("output.txt")?;
+    file.write_all(b"Line 1\n")?;
+    file.write_all(b"Line 2\n")?;
+    file.write_all(b"Line 3\n")?;
+    io::Result::Ok(())
+}).await.unwrap()?;
+```
+
+## Buffered I/O
+
+Use `BufReader` and `BufWriter` to reduce the number of `spawn_blocking` calls:
+
+```rust
+use tokio::fs::File;
+use tokio::io::{AsyncBufReadExt, BufReader};
+
+let file = File::open("input.txt").await?;
+let reader = BufReader::new(file);
+let mut lines = reader.lines();
+
+while let Some(line) = lines.next_line().await? {
+    println!("{}", line);
+}
+```
+
+## OpenOptions
+
+For fine-grained control over file opening:
+
+```rust
+use tokio::fs::OpenOptions;
+
+let file = OpenOptions::new()
+    .read(true)
+    .write(true)
+    .create(true)
+    .append(true)
+    .open("file.txt")
+    .await?;
+```
+
+**Options:**
+- `read(bool)` - Open for reading
+- `write(bool)` - Open for writing
+- `append(bool)` - Append to file
+- `truncate(bool)` - Truncate file to 0 bytes
+- `create(bool)` - Create if doesn't exist
+- `create_new(bool)` - Create only if doesn't exist
+
+## Examples
+
+### Counting lines without loading entire file
+
+```rust
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+
+let mut file = File::open("large_file.txt").await?;
+let mut chunk = vec![0; 4096];
+let mut line_count = 0;
+
+loop {
+    let len = file.read(&mut chunk).await?;
+    if len == 0 {
+        break;
+    }
+    
+    for &byte in &chunk[..len] {
+        if byte == b'\n' {
+            line_count += 1;
+        }
+    }
+}
+
+println!("File has {} lines", line_count);
+```
+
+## See Also
+
+- [AsyncRead](https://docs.rs/tokio/latest/tokio/io/trait.AsyncRead.html) - Async reading trait
+- [AsyncWrite](https://docs.rs/tokio/latest/tokio/io/trait.AsyncWrite.html) - Async writing trait  
+- [AsyncSeek](https://docs.rs/tokio/latest/tokio/io/trait.AsyncSeek.html) - Async seeking trait
+- [BufReader](https://docs.rs/tokio/latest/tokio/io/struct.BufReader.html) - Buffered reader
+- [BufWriter](https://docs.rs/tokio/latest/tokio/io/struct.BufWriter.html) - Buffered writer

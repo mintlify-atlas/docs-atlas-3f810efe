@@ -1,0 +1,559 @@
+---
+title: Testing
+description: Testing utilities and patterns for Tokio-based async code
+---
+
+Tokio provides a comprehensive suite of testing utilities to help you write reliable tests for async code. This guide covers the `tokio-test` crate and testing best practices.
+
+## Setup
+
+Add `tokio` with the `test-util` feature to your dev dependencies:
+
+```toml Cargo.toml
+[dev-dependencies]
+tokio = { version = "1.50", features = ["test-util", "rt", "macros"] }
+tokio-test = "0.4"
+```
+
+<Note>
+  The `test-util` feature automatically enables `rt`, `sync`, and `time` features.
+</Note>
+
+## Basic Testing
+
+### Using `#[tokio::test]`
+
+The simplest way to test async functions:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use tokio::time::{sleep, Duration};
+
+    #[tokio::test]
+    async fn test_async_function() {
+        let result = async_operation().await;
+        assert_eq!(result, 42);
+    }
+    
+    async fn async_operation() -> i32 {
+        sleep(Duration::from_millis(10)).await;
+        42
+    }
+}
+```
+
+### Configuring the Test Runtime
+
+Customize the runtime for specific tests:
+
+```rust
+#[tokio::test(flavor = "current_thread")]
+async fn test_single_threaded() {
+    // Runs on current-thread scheduler
+    assert!(true);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_multi_threaded() {
+    // Runs on multi-thread scheduler with 2 workers
+    assert!(true);
+}
+```
+
+### Starting Time Paused
+
+Start tests with time paused for deterministic testing:
+
+```rust
+use tokio::time::{sleep, Duration};
+
+#[tokio::test(start_paused = true)]
+async fn test_with_paused_time() {
+    let start = tokio::time::Instant::now();
+    sleep(Duration::from_secs(1)).await;
+    let elapsed = start.elapsed();
+    
+    // Time advances instantly when paused
+    assert!(elapsed < Duration::from_millis(10));
+}
+```
+
+<Tip>
+  Use `start_paused = true` to make time-based tests run instantly and deterministically.
+</Tip>
+
+## Task Testing with `tokio-test`
+
+### The `task::spawn` Helper
+
+Test futures without pinning or context setup:
+
+```rust
+use tokio_test::task;
+use std::task::Poll;
+
+#[test]
+fn test_future_polling() {
+    let fut = async { 42 };
+    
+    let mut task = task::spawn(fut);
+    
+    // Poll the future
+    assert!(task.poll().is_ready());
+}
+```
+
+### Testing Pending Futures
+
+```rust
+use tokio_test::task;
+use tokio::sync::oneshot;
+use std::task::Poll;
+
+#[test]
+fn test_pending_future() {
+    let (tx, rx) = oneshot::channel::<i32>();
+    
+    let mut task = task::spawn(rx);
+    
+    // Future is pending
+    assert!(task.poll().is_pending());
+    
+    // Send value
+    tx.send(42).unwrap();
+    
+    // Now it's ready
+    assert_eq!(task.poll(), Poll::Ready(Ok(42)));
+}
+```
+
+### Tracking Wake Notifications
+
+Verify that futures wake tasks correctly:
+
+```rust
+use tokio_test::task;
+use tokio::sync::oneshot;
+
+#[test]
+fn test_waker_notifications() {
+    let (tx, rx) = oneshot::channel::<i32>();
+    
+    let mut task = task::spawn(rx);
+    
+    // Poll once
+    assert!(task.poll().is_pending());
+    assert!(!task.is_woken());
+    
+    // Send value (this wakes the task)
+    tx.send(42).unwrap();
+    
+    // Task was woken
+    assert!(task.is_woken());
+}
+```
+
+### Testing Streams
+
+The `task::spawn` helper also works with streams:
+
+```rust
+use tokio_test::task;
+use tokio_stream::{self as stream, StreamExt};
+use std::task::Poll;
+
+#[test]
+fn test_stream() {
+    let stream = stream::iter(vec![1, 2, 3]);
+    
+    let mut task = task::spawn(stream);
+    
+    // Poll items from the stream
+    assert_eq!(task.poll_next(), Poll::Ready(Some(1)));
+    assert_eq!(task.poll_next(), Poll::Ready(Some(2)));
+    assert_eq!(task.poll_next(), Poll::Ready(Some(3)));
+    assert_eq!(task.poll_next(), Poll::Ready(None));
+}
+```
+
+## Mock I/O Testing
+
+### Using `io::Builder`
+
+Create mock I/O objects that follow a predefined script:
+
+```rust
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_test::io::Builder;
+
+#[tokio::test]
+async fn test_read_write() {
+    let mut mock = Builder::new()
+        .read(b"hello")
+        .write(b"world")
+        .build();
+    
+    // Read "hello"
+    let mut buf = [0; 5];
+    mock.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+    
+    // Write "world"
+    mock.write_all(b"world").await.unwrap();
+}
+```
+
+### Testing Error Handling
+
+```rust
+use tokio::io::AsyncReadExt;
+use tokio_test::io::Builder;
+use std::io;
+
+#[tokio::test]
+async fn test_read_error() {
+    let error = io::Error::new(io::ErrorKind::BrokenPipe, "pipe broke");
+    
+    let mut mock = Builder::new()
+        .read(b"partial")
+        .read_error(error)
+        .build();
+    
+    // First read succeeds
+    let mut buf = [0; 7];
+    mock.read_exact(&mut buf).await.unwrap();
+    
+    // Second read fails
+    let result = mock.read(&mut buf).await;
+    assert!(result.is_err());
+}
+```
+
+### Testing with Delays
+
+```rust
+use tokio::io::AsyncReadExt;
+use tokio::time::Duration;
+use tokio_test::io::Builder;
+
+#[tokio::test]
+async fn test_with_delay() {
+    let mut mock = Builder::new()
+        .wait(Duration::from_millis(100))
+        .read(b"delayed data")
+        .build();
+    
+    let mut buf = [0; 12];
+    mock.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"delayed data");
+}
+```
+
+### Testing Write Expectations
+
+```rust
+use tokio::io::AsyncWriteExt;
+use tokio_test::io::Builder;
+
+#[tokio::test]
+async fn test_write_sequence() {
+    let mut mock = Builder::new()
+        .write(b"GET /")
+        .write(b" HTTP/1.1\r\n")
+        .write(b"\r\n")
+        .build();
+    
+    // Must write exact sequence
+    mock.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+}
+```
+
+<Warning>
+  Mock I/O will panic if the actual I/O operations don't match the script. This helps catch bugs early.
+</Warning>
+
+## Time Manipulation
+
+### Pausing and Advancing Time
+
+```rust
+use tokio::time::{self, sleep, Duration, Instant};
+
+#[tokio::test(start_paused = true)]
+async fn test_time_advance() {
+    let start = Instant::now();
+    
+    // This completes instantly in test
+    sleep(Duration::from_secs(1)).await;
+    
+    assert!(start.elapsed() < Duration::from_millis(10));
+}
+```
+
+### Manual Time Control
+
+```rust
+use tokio::time::{self, sleep, Duration, Instant};
+
+#[tokio::test(start_paused = true)]
+async fn test_manual_time() {
+    let start = Instant::now();
+    
+    tokio::spawn(async {
+        sleep(Duration::from_secs(5)).await;
+        println!("Task completed");
+    });
+    
+    // Advance time by 5 seconds
+    time::advance(Duration::from_secs(5)).await;
+    
+    // Task has completed
+    assert_eq!(start.elapsed(), Duration::from_secs(5));
+}
+```
+
+### Testing Timeouts
+
+```rust
+use tokio::time::{timeout, Duration};
+use tokio::sync::oneshot;
+
+#[tokio::test(start_paused = true)]
+async fn test_timeout() {
+    let (_tx, rx) = oneshot::channel::<i32>();
+    
+    // This will timeout instantly in test
+    let result = timeout(Duration::from_secs(1), rx).await;
+    assert!(result.is_err());
+}
+```
+
+## Testing with `block_on`
+
+For non-async test functions:
+
+```rust
+use tokio_test::block_on;
+
+#[test]
+fn test_with_block_on() {
+    let result = block_on(async {
+        async_function().await
+    });
+    
+    assert_eq!(result, 42);
+}
+
+async fn async_function() -> i32 {
+    42
+}
+```
+
+<Note>
+  `tokio_test::block_on` creates a new current-thread runtime with all features enabled.
+</Note>
+
+## Testing Patterns
+
+### Testing Concurrent Operations
+
+```rust
+use tokio::sync::mpsc;
+
+#[tokio::test]
+async fn test_concurrent_sends() {
+    let (tx, mut rx) = mpsc::channel(10);
+    
+    // Spawn multiple senders
+    let mut handles = vec![];
+    for i in 0..5 {
+        let tx = tx.clone();
+        handles.push(tokio::spawn(async move {
+            tx.send(i).await.unwrap();
+        }));
+    }
+    
+    // Drop original sender
+    drop(tx);
+    
+    // Wait for all senders
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    
+    // Collect all values
+    let mut values = vec![];
+    while let Some(val) = rx.recv().await {
+        values.push(val);
+    }
+    
+    values.sort();
+    assert_eq!(values, vec![0, 1, 2, 3, 4]);
+}
+```
+
+### Testing Cancellation
+
+```rust
+use tokio::time::{sleep, Duration};
+use tokio::sync::oneshot;
+
+#[tokio::test]
+async fn test_task_cancellation() {
+    let (tx, rx) = oneshot::channel();
+    
+    let handle = tokio::spawn(async move {
+        sleep(Duration::from_secs(10)).await;
+        tx.send(42).unwrap();
+    });
+    
+    // Cancel the task
+    handle.abort();
+    
+    // Task was cancelled, channel is dropped
+    assert!(rx.await.is_err());
+}
+```
+
+### Testing Cleanup with Drop
+
+```rust
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+struct Resource {
+    cleaned_up: Arc<AtomicBool>,
+}
+
+impl Drop for Resource {
+    fn drop(&mut self) {
+        self.cleaned_up.store(true, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn test_resource_cleanup() {
+    let cleaned_up = Arc::new(AtomicBool::new(false));
+    
+    {
+        let resource = Resource {
+            cleaned_up: cleaned_up.clone(),
+        };
+        
+        tokio::spawn(async move {
+            let _r = resource;
+            // Resource held by task
+        }).await.unwrap();
+    }
+    
+    // Resource was dropped
+    assert!(cleaned_up.load(Ordering::SeqCst));
+}
+```
+
+## Integration Testing
+
+### Testing with Real Network I/O
+
+```rust
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::test]
+async fn test_tcp_server() {
+    // Start server
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0; 5];
+        socket.read_exact(&mut buf).await.unwrap();
+        socket.write_all(b"world").await.unwrap();
+    });
+    
+    // Connect client
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    client.write_all(b"hello").await.unwrap();
+    
+    let mut buf = [0; 5];
+    client.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"world");
+}
+```
+
+### Using Test Fixtures
+
+```rust
+use tokio::runtime::Runtime;
+
+struct TestRuntime {
+    rt: Runtime,
+}
+
+impl TestRuntime {
+    fn new() -> Self {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        Self { rt }
+    }
+    
+    fn block_on<F: std::future::Future>(&self, f: F) -> F::Output {
+        self.rt.block_on(f)
+    }
+}
+
+#[test]
+fn test_with_fixture() {
+    let test_rt = TestRuntime::new();
+    
+    let result = test_rt.block_on(async {
+        async_operation().await
+    });
+    
+    assert_eq!(result, 42);
+}
+
+async fn async_operation() -> i32 {
+    42
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Use #[tokio::test]" icon="check">
+    Simplest way to test async functions. Automatically sets up runtime.
+  </Card>
+  
+  <Card title="Pause Time" icon="clock">
+    Use `start_paused = true` for fast, deterministic time-based tests.
+  </Card>
+  
+  <Card title="Mock I/O" icon="file">
+    Use `tokio_test::io::Builder` for predictable I/O testing.
+  </Card>
+  
+  <Card title="Test Concurrency" icon="users">
+    Test race conditions and concurrent access patterns.
+  </Card>
+</CardGroup>
+
+## Testing Checklist
+
+- [ ] Use `#[tokio::test]` for async test functions
+- [ ] Enable `start_paused = true` for time-based tests
+- [ ] Mock I/O with `tokio_test::io::Builder`
+- [ ] Test error handling and edge cases
+- [ ] Test cancellation behavior
+- [ ] Test cleanup and resource deallocation
+- [ ] Test concurrent operations
+- [ ] Use `task::spawn` for low-level future testing
+- [ ] Verify waker notifications with `is_woken()`
+- [ ] Test with both single and multi-threaded runtimes when relevant
+
+<Tip>
+  Write tests that are fast, deterministic, and isolated. Use mocks and paused time to avoid flaky tests.
+</Tip>
